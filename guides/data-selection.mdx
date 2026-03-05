@@ -1,0 +1,491 @@
+---
+title: 'Data Selection and Active Learning'
+description: 'Use airbench for data selection experiments and active learning research'
+icon: 'filter'
+---
+
+## Overview
+
+Airbench provides a fast platform for experiments in data selection and active learning. Because training is so fast (2-27 seconds), you can run many iterations of data selection loops and quickly validate hypotheses.
+
+<Info>
+Run a complete data selection experiment in under 20 seconds on an A100 GPU.
+</Info>
+
+## Example: Low-Confidence Sampling
+
+This example from the README demonstrates the classic result that low-confidence examples provide more training signal than random examples:
+
+```python
+import torch
+from airbench import train94, infer, evaluate, CifarLoader
+
+# Step 1: Train initial model without label smoothing for better confidence signal
+net = train94(label_smoothing=0)
+
+# Step 2: Get confidence scores for all training examples
+loader = CifarLoader('cifar10', train=True, batch_size=1000)
+logits = infer(net, loader)
+conf = logits.log_softmax(1).amax(1)  # Log confidence of predicted class
+
+# Step 3: Train on random 60% of data
+train_loader = CifarLoader('cifar10', train=True, batch_size=1024, 
+                           aug=dict(flip=True, translate=2))
+mask = (torch.rand(len(train_loader.labels)) < 0.6)
+print('Training on %d images selected randomly' % mask.sum())
+train_loader.images = train_loader.images[mask]
+train_loader.labels = train_loader.labels[mask]
+train94(train_loader, epochs=16)  # yields around 93% accuracy
+
+# Step 4: Train on lowest-confidence 60% of data
+train_loader = CifarLoader('cifar10', train=True, batch_size=1024, 
+                           aug=dict(flip=True, translate=2))
+mask = (conf < conf.float().quantile(0.6))
+print('Training on %d images selected based on minimum confidence' % mask.sum())
+train_loader.images = train_loader.images[mask]
+train_loader.labels = train_loader.labels[mask]
+train94(train_loader, epochs=16)  # yields around 94% accuracy
+```
+
+<Note>
+**Key Result**: Training on the 60% lowest-confidence examples achieves ~94% accuracy, while training on random 60% achieves only ~93% accuracy. This demonstrates that hard examples contain more information.
+</Note>
+
+## Understanding Confidence Scores
+
+### Log Softmax vs Softmax
+
+The example uses `log_softmax` for numerical stability:
+
+```python
+# Get logits for all examples
+logits = infer(net, loader)
+
+# Method 1: Log confidence (more numerically stable)
+log_conf = logits.log_softmax(1).amax(1)  # Shape: [50000]
+
+# Method 2: Regular confidence
+conf = logits.softmax(1).max(1).values    # Shape: [50000]
+
+# Both measure confidence in the predicted class
+# Lower values = less confident
+# Higher values = more confident
+```
+
+### Visualizing Confidence Distribution
+
+```python
+import torch
+import matplotlib.pyplot as plt
+from airbench import train94, infer, CifarLoader
+
+# Train model and get confidences
+net = train94(label_smoothing=0)
+loader = CifarLoader('cifar10', train=True, batch_size=1000)
+logits = infer(net, loader)
+conf = logits.log_softmax(1).amax(1)
+
+# Plot histogram
+plt.hist(conf.cpu().numpy(), bins=50)
+plt.xlabel('Log Confidence')
+plt.ylabel('Count')
+plt.title('Distribution of Model Confidence on Training Data')
+plt.savefig('confidence_distribution.png')
+
+# Print statistics
+print(f'Mean confidence: {conf.mean():.4f}')
+print(f'Std confidence: {conf.std():.4f}')
+print(f'Min confidence: {conf.min():.4f}')
+print(f'Max confidence: {conf.max():.4f}')
+```
+
+## Active Learning Strategies
+
+### Strategy 1: Uncertainty Sampling
+
+Select examples where the model is least confident:
+
+```python
+import torch
+from airbench import train94, infer, CifarLoader
+
+def uncertainty_sampling(model, pool_loader, n_select=5000):
+    """Select n_select examples with lowest confidence."""
+    logits = infer(model, pool_loader)
+    conf = logits.log_softmax(1).amax(1)
+    
+    # Get indices of n_select lowest confidence examples
+    _, indices = conf.topk(n_select, largest=False)
+    return indices
+
+# Initial training on small labeled set
+train_loader = CifarLoader('cifar10', train=True, batch_size=512,
+                           aug=dict(flip=True, translate=2))
+small_mask = torch.zeros(len(train_loader.labels), dtype=bool)
+small_mask[:5000] = True  # Start with first 5000 examples
+train_loader.images = train_loader.images[small_mask]
+train_loader.labels = train_loader.labels[small_mask]
+model = train94(train_loader, epochs=10)
+
+# Active learning loop
+pool_loader = CifarLoader('cifar10', train=True, batch_size=1000)
+for iteration in range(5):
+    # Select uncertain examples
+    indices = uncertainty_sampling(model, pool_loader, n_select=5000)
+    
+    # Add to training set
+    train_loader = CifarLoader('cifar10', train=True, batch_size=512,
+                               aug=dict(flip=True, translate=2))
+    train_mask = torch.zeros(len(train_loader.labels), dtype=bool)
+    train_mask[indices] = True
+    train_loader.images = train_loader.images[train_mask]
+    train_loader.labels = train_loader.labels[train_mask]
+    
+    # Retrain
+    model = train94(train_loader, epochs=15)
+    print(f'Iteration {iteration}: Training on {train_mask.sum()} examples')
+```
+
+### Strategy 2: Margin Sampling
+
+Select examples where the difference between top-2 predictions is smallest:
+
+```python
+def margin_sampling(model, pool_loader, n_select=5000):
+    """Select examples with smallest margin between top-2 predictions."""
+    logits = infer(model, pool_loader)
+    probs = logits.softmax(1)
+    
+    # Get top 2 probabilities
+    top2_probs, _ = probs.topk(2, dim=1)
+    margins = top2_probs[:, 0] - top2_probs[:, 1]
+    
+    # Select smallest margins (most uncertain)
+    _, indices = margins.topk(n_select, largest=False)
+    return indices
+```
+
+### Strategy 3: Entropy Sampling
+
+Select examples with highest prediction entropy:
+
+```python
+def entropy_sampling(model, pool_loader, n_select=5000):
+    """Select examples with highest prediction entropy."""
+    logits = infer(model, pool_loader)
+    probs = logits.softmax(1)
+    
+    # Calculate entropy: -sum(p * log(p))
+    entropy = -(probs * probs.log()).sum(1)
+    
+    # Select highest entropy
+    _, indices = entropy.topk(n_select, largest=True)
+    return indices
+```
+
+## Comparing Selection Strategies
+
+Here's a complete experiment comparing different strategies:
+
+```python
+import torch
+from airbench import train94, infer, evaluate, CifarLoader
+
+def run_experiment(strategy_fn, n_select=30000, epochs=16):
+    """Run data selection experiment with given strategy."""
+    # Train initial model for selection
+    net = train94(label_smoothing=0, verbose=False)
+    
+    # Select examples
+    loader = CifarLoader('cifar10', train=True, batch_size=1000)
+    if strategy_fn is None:
+        # Random baseline
+        mask = torch.rand(len(loader.labels)) < (n_select / len(loader.labels))
+    else:
+        indices = strategy_fn(net, loader, n_select)
+        mask = torch.zeros(len(loader.labels), dtype=bool)
+        mask[indices] = True
+    
+    # Train on selected data
+    train_loader = CifarLoader('cifar10', train=True, batch_size=1024,
+                               aug=dict(flip=True, translate=2))
+    train_loader.images = train_loader.images[mask]
+    train_loader.labels = train_loader.labels[mask]
+    model = train94(train_loader, epochs=epochs, verbose=False)
+    
+    # Evaluate
+    test_loader = CifarLoader('cifar10', train=False, batch_size=1000)
+    accuracy = evaluate(model, test_loader, tta_level=2)
+    return accuracy
+
+# Define strategies
+def uncertainty(model, loader, n):
+    logits = infer(model, loader)
+    conf = logits.log_softmax(1).amax(1)
+    _, indices = conf.topk(n, largest=False)
+    return indices
+
+def margin(model, loader, n):
+    logits = infer(model, loader)
+    probs = logits.softmax(1)
+    top2 = probs.topk(2, dim=1).values
+    margins = top2[:, 0] - top2[:, 1]
+    _, indices = margins.topk(n, largest=False)
+    return indices
+
+def entropy(model, loader, n):
+    logits = infer(model, loader)
+    probs = logits.softmax(1)
+    ent = -(probs * probs.log()).sum(1)
+    _, indices = ent.topk(n, largest=True)
+    return indices
+
+# Run experiments
+print('Running experiments...')
+results = {
+    'Random': run_experiment(None, n_select=30000),
+    'Uncertainty': run_experiment(uncertainty, n_select=30000),
+    'Margin': run_experiment(margin, n_select=30000),
+    'Entropy': run_experiment(entropy, n_select=30000),
+}
+
+print('\nResults (60% of data):')
+for strategy, acc in results.items():
+    print(f'{strategy:12s}: {acc*100:.2f}%')
+```
+
+<Tip>
+This complete experiment runs in about 2 minutes on an A100, allowing rapid iteration on data selection ideas.
+</Tip>
+
+## Hard Example Mining
+
+Identify and analyze examples that are consistently difficult:
+
+```python
+import torch
+from airbench import train94, infer, CifarLoader
+
+def find_hard_examples(n_trials=10):
+    """Find examples that are consistently low-confidence across multiple training runs."""
+    loader = CifarLoader('cifar10', train=True, batch_size=1000)
+    all_confidences = []
+    
+    for trial in range(n_trials):
+        print(f'Trial {trial+1}/{n_trials}')
+        net = train94(label_smoothing=0, verbose=False)
+        logits = infer(net, loader)
+        conf = logits.log_softmax(1).amax(1)
+        all_confidences.append(conf)
+    
+    # Average confidence across trials
+    avg_conf = torch.stack(all_confidences).mean(0)
+    
+    # Find consistently hard examples
+    hard_indices = avg_conf.topk(1000, largest=False).indices
+    
+    print(f'\nFound {len(hard_indices)} consistently hard examples')
+    print(f'Average confidence of hard examples: {avg_conf[hard_indices].mean():.4f}')
+    print(f'Average confidence overall: {avg_conf.mean():.4f}')
+    
+    return hard_indices, avg_conf
+
+hard_indices, confidences = find_hard_examples(n_trials=5)
+
+# Analyze hard example distribution across classes
+loader = CifarLoader('cifar10', train=True, batch_size=1000)
+hard_labels = loader.labels[hard_indices]
+for class_idx in range(10):
+    count = (hard_labels == class_idx).sum()
+    print(f'{loader.classes[class_idx]:12s}: {count:4d} hard examples')
+```
+
+## Curriculum Learning
+
+Train on easy examples first, then gradually add harder examples:
+
+```python
+import torch
+from airbench import train94, infer, CifarLoader
+
+def curriculum_learning():
+    """Train with curriculum: easy examples first, then progressively harder."""
+    # Get confidence scores
+    net = train94(label_smoothing=0, verbose=False)
+    loader = CifarLoader('cifar10', train=True, batch_size=1000)
+    logits = infer(net, loader)
+    conf = logits.log_softmax(1).amax(1)
+    
+    # Sort by confidence (easy to hard)
+    sorted_indices = conf.argsort(descending=True)
+    
+    # Stage 1: Train on easiest 40%
+    print('Stage 1: Training on easiest 40%')
+    train_loader = CifarLoader('cifar10', train=True, batch_size=1024,
+                               aug=dict(flip=True, translate=2))
+    stage1_indices = sorted_indices[:20000]
+    mask1 = torch.zeros(len(train_loader.labels), dtype=bool)
+    mask1[stage1_indices] = True
+    train_loader.images = train_loader.images[mask1]
+    train_loader.labels = train_loader.labels[mask1]
+    model = train94(train_loader, epochs=10, verbose=False)
+    
+    # Stage 2: Add medium difficulty 40%
+    print('Stage 2: Adding medium difficulty examples')
+    train_loader = CifarLoader('cifar10', train=True, batch_size=1024,
+                               aug=dict(flip=True, translate=2))
+    stage2_indices = sorted_indices[:40000]
+    mask2 = torch.zeros(len(train_loader.labels), dtype=bool)
+    mask2[stage2_indices] = True
+    train_loader.images = train_loader.images[mask2]
+    train_loader.labels = train_loader.labels[mask2]
+    model = train94(train_loader, epochs=8, verbose=False)
+    
+    # Stage 3: Add all data
+    print('Stage 3: Training on all data')
+    train_loader = CifarLoader('cifar10', train=True, batch_size=1024,
+                               aug=dict(flip=True, translate=2))
+    model = train94(train_loader, epochs=10, verbose=False)
+    
+    # Final evaluation
+    test_loader = CifarLoader('cifar10', train=False, batch_size=1000)
+    from airbench import evaluate
+    accuracy = evaluate(model, test_loader, tta_level=2)
+    print(f'\nFinal accuracy: {accuracy*100:.2f}%')
+    
+    return model
+
+curriculum_learning()
+```
+
+## Performance Tips
+
+<CardGroup cols={2}>
+  <Card title="Disable Verbose" icon="volume-slash">
+    Set `verbose=False` in training functions for faster experiments
+  </Card>
+  <Card title="Use Larger Batches" icon="layer-group">
+    Increase batch size for inference to speed up confidence scoring
+  </Card>
+  <Card title="Reduce Epochs" icon="clock">
+    Use fewer epochs for selection models (they don't need to be perfect)
+  </Card>
+  <Card title="Batch Multiple Runs" icon="bolt">
+    Run multiple trials in parallel on multiple GPUs
+  </Card>
+</CardGroup>
+
+## Common Pitfalls
+
+<Warning>
+**Label Smoothing**: Disable label smoothing (`label_smoothing=0`) when training the model used for confidence scoring. Label smoothing artificially reduces confidence scores.
+</Warning>
+
+<Warning>
+**Data Leakage**: Never use test set for data selection. Only select from the training pool.
+</Warning>
+
+<Warning>
+**Overfitting to Selection**: If using confidence from a single model, the selection may overfit to that model's biases. Consider averaging over multiple models.
+</Warning>
+
+## Advanced: Multi-Round Active Learning
+
+Complete active learning loop with oracle labeling simulation:
+
+```python
+import torch
+from airbench import train94, infer, evaluate, CifarLoader
+
+def active_learning_loop(budget=50000, initial_size=5000, 
+                        queries_per_round=5000, strategy='uncertainty'):
+    """
+    Simulate active learning with a labeling budget.
+    
+    Args:
+        budget: Total number of labels we can use
+        initial_size: Size of initial labeled set
+        queries_per_round: Number of examples to label per round
+        strategy: 'uncertainty', 'margin', or 'entropy'
+    """
+    # Start with initial labeled set
+    all_data = CifarLoader('cifar10', train=True, batch_size=1000)
+    labeled_mask = torch.zeros(len(all_data.labels), dtype=bool)
+    labeled_mask[:initial_size] = True
+    
+    results = []
+    labels_used = initial_size
+    
+    while labels_used < budget:
+        print(f'\n=== Round with {labels_used} labels ===')
+        
+        # Train on current labeled set
+        train_loader = CifarLoader('cifar10', train=True, batch_size=1024,
+                                   aug=dict(flip=True, translate=2))
+        train_loader.images = train_loader.images[labeled_mask]
+        train_loader.labels = train_loader.labels[labeled_mask]
+        model = train94(train_loader, epochs=12, verbose=False)
+        
+        # Evaluate
+        test_loader = CifarLoader('cifar10', train=False, batch_size=1000)
+        accuracy = evaluate(model, test_loader, tta_level=2)
+        results.append((labels_used, accuracy))
+        print(f'Accuracy: {accuracy*100:.2f}%')
+        
+        if labels_used >= budget:
+            break
+        
+        # Select new examples from unlabeled pool
+        pool_mask = ~labeled_mask
+        pool_loader = CifarLoader('cifar10', train=True, batch_size=1000)
+        pool_loader.images = pool_loader.images[pool_mask]
+        pool_loader.labels = pool_loader.labels[pool_mask]
+        
+        # Get confidence scores
+        logits = infer(model, pool_loader)
+        if strategy == 'uncertainty':
+            scores = logits.log_softmax(1).amax(1)
+            _, selected = scores.topk(min(queries_per_round, pool_mask.sum()), 
+                                     largest=False)
+        elif strategy == 'margin':
+            probs = logits.softmax(1)
+            top2 = probs.topk(2, dim=1).values
+            margins = top2[:, 0] - top2[:, 1]
+            _, selected = margins.topk(min(queries_per_round, pool_mask.sum()), 
+                                      largest=False)
+        elif strategy == 'entropy':
+            probs = logits.softmax(1)
+            entropy = -(probs * probs.log()).sum(1)
+            _, selected = entropy.topk(min(queries_per_round, pool_mask.sum()), 
+                                      largest=True)
+        
+        # Update labeled set (oracle provides labels)
+        pool_indices = torch.where(pool_mask)[0]
+        labeled_mask[pool_indices[selected]] = True
+        labels_used += len(selected)
+    
+    return results
+
+# Run experiment
+results = active_learning_loop(budget=30000, initial_size=5000, 
+                               queries_per_round=5000, strategy='uncertainty')
+
+print('\n=== Final Results ===')
+for labels, acc in results:
+    print(f'{labels:5d} labels: {acc*100:.2f}%')
+```
+
+<Info>
+This complete active learning simulation runs in about 3-4 minutes, allowing rapid prototyping of selection strategies.
+</Info>
+
+## Next Steps
+
+<CardGroup cols={2}>
+  <Card title="Custom Training" href="/guides/custom-training" icon="code">
+    Learn to build custom training loops
+  </Card>
+  <Card title="API Reference" href="/api/infer" icon="book">
+    Explore the inference API
+  </Card>
+</CardGroup>

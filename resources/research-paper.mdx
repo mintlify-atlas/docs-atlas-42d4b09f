@@ -1,0 +1,170 @@
+---
+title: 'Research Paper'
+description: 'Academic foundation and research behind CIFAR-10 Airbench'
+---
+
+## Paper Overview
+
+The methods used in CIFAR-10 Airbench are detailed in the research paper:
+
+<Card title="CIFAR-10 Airbench: Fast Neural Network Training" icon="file-lines" href="https://arxiv.org/abs/2404.00498">
+  Read the full paper on arXiv (arXiv:2404.00498)
+</Card>
+
+This paper presents a comprehensive set of techniques that enable training neural networks on CIFAR-10 to high accuracy in a matter of seconds rather than minutes.
+
+## Key Contributions
+
+The research introduces several innovations that work together to achieve unprecedented training speeds:
+
+<CardGroup cols={2}>
+  <Card title="Network Architecture" icon="diagram-project">
+    Optimized architecture design that balances model capacity with computational efficiency
+  </Card>
+  
+  <Card title="Training Recipes" icon="book">
+    Carefully tuned hyperparameters including learning rates, batch sizes, and augmentation strategies
+  </Card>
+  
+  <Card title="GPU Acceleration" icon="microchip">
+    Custom GPU-accelerated dataloader that eliminates CPU bottlenecks
+  </Card>
+  
+  <Card title="Mixed Precision" icon="gauge-high">
+    Efficient use of FP16/FP32 mixed precision for maximum throughput
+  </Card>
+</CardGroup>
+
+## Methods
+
+The paper describes several key techniques:
+
+### 1. GPU-Accelerated Data Loading
+
+Unlike traditional dataloaders that perform augmentation on CPU, Airbench moves all data processing to the GPU. This eliminates CPU-GPU transfer bottlenecks and enables faster iteration times.
+
+### 2. Efficient Augmentation Pipeline
+
+The augmentation strategy is carefully designed to provide regularization while maintaining training speed:
+- Random horizontal flips
+- Random translations
+- Cutout regularization
+
+### 3. Optimized Network Architecture
+
+The network architecture is specifically designed for fast training while maintaining high accuracy, with careful attention to:
+- Layer widths and depths
+- Activation functions
+- Normalization strategies
+
+### 4. Training Schedule
+
+Precisely tuned training schedules with:
+- Warmup phases
+- Learning rate decay
+- Label smoothing
+- Momentum scheduling
+
+## Beyond the Paper
+
+Since the paper's publication, two additional techniques have pushed the records even further:
+
+<AccordionGroup>
+  <Accordion title="Muon Optimizer">
+    The current 94% accuracy record uses the [Muon optimizer](https://kellerjordan.github.io/posts/muon/), a novel optimization algorithm that improves convergence speed and training stability.
+    
+    **Key benefits:**
+    - Faster convergence to target accuracy
+    - More stable training dynamics
+    - Better generalization
+    
+    **Performance:** Reduces training time from 3.09s to 2.59s (16% improvement)
+  </Accordion>
+  
+  <Accordion title="Data Filtering">
+    The `airbench96_faster.py` script incorporates sophisticated data filtering techniques that identify and prioritize the most informative training examples.
+    
+    **Key benefits:**
+    - More efficient use of training time
+    - Focus on hard examples
+    - Reduced computational cost
+    
+    **Performance:** Reduces training time from 34.7s to 27.3s (21% improvement)
+  </Accordion>
+</AccordionGroup>
+
+## Prior Work and Context
+
+CIFAR-10 Airbench builds upon a rich history of research in fast neural network training:
+
+### hlb-CIFAR10
+
+<Card title="hlb-CIFAR10" icon="github" href="https://github.com/tysam-code/hlb-CIFAR10">
+  Previous speedrun record: 6.3 A100-seconds to 94% accuracy
+</Card>
+
+The [hlb-CIFAR10 project](https://github.com/tysam-code/hlb-CIFAR10) by tysam-code established the previous speedrun record, achieving 94% accuracy in 6.3 seconds on an A100. Airbench improves upon this by more than 2x, reaching the same accuracy in just 2.59 seconds.
+
+### Myrtle.ai How to Train Your ResNet
+
+<Card title="How to Train Your ResNet" icon="blog" href="https://myrtle.ai/learn/how-to-train-your-resnet/">
+  Classic fast training series by Myrtle.ai
+</Card>
+
+The foundational work by [myrtle.ai](https://myrtle.ai/learn/how-to-train-your-resnet/) demonstrated that CIFAR-10 could be trained to 94% accuracy in 26 V100-seconds (equivalent to approximately 8+ A100-seconds). This influential series of blog posts introduced many of the techniques that modern speedrun attempts build upon.
+
+### Evolution of Records
+
+The progression of speedrun records shows the rapid advancement in training efficiency:
+
+1. **Myrtle.ai (2018)**: ~26 V100-seconds (~8+ A100-seconds)
+2. **hlb-CIFAR10 (2023)**: 6.3 A100-seconds
+3. **Airbench Paper (2024)**: 3.09 A100-seconds
+4. **Airbench + Muon (Current)**: 2.59 A100-seconds
+
+<Info>
+  The records continue to evolve. The README notes that [even faster methods](https://github.com/hiverge/cifar10-speedrun/tree/main) have since been developed, demonstrating the ongoing innovation in this space.
+</Info>
+
+## Speedrun Community
+
+The CIFAR-10 speedrun has become a benchmark for testing new training methods and optimizers. The community continues to push the boundaries of what's possible:
+
+<CardGroup cols={2}>
+  <Card title="Reproducibility" icon="arrows-rotate">
+    All records are accompanied by runnable code that can be verified by the community
+  </Card>
+  
+  <Card title="Open Source" icon="code">
+    Complete transparency allows researchers to build upon previous work
+  </Card>
+</CardGroup>
+
+## Citation
+
+If you use CIFAR-10 Airbench in your research, please cite the paper:
+
+```bibtex
+@article{jordan2024airbench,
+  title={CIFAR-10 Airbench: Fast Neural Network Training},
+  author={Jordan, Keller},
+  journal={arXiv preprint arXiv:2404.00498},
+  year={2024}
+}
+```
+
+## Related Resources
+
+<CardGroup cols={3}>
+  <Card title="Performance Benchmarks" icon="chart-line" href="/resources/benchmarks">
+    See detailed performance comparisons
+  </Card>
+  
+  <Card title="Muon Optimizer" icon="link" href="https://kellerjordan.github.io/posts/muon/">
+    Learn about the Muon optimizer
+  </Card>
+  
+  <Card title="GitHub Repository" icon="github" href="https://github.com/KellerJordan/cifar10-airbench">
+    View the source code
+  </Card>
+</CardGroup>

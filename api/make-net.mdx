@@ -1,0 +1,240 @@
+---
+title: 'make_net Functions'
+description: 'Create neural network architectures optimized for different accuracy targets'
+---
+
+## Overview
+
+The `make_net` family of functions creates neural network architectures with different configurations optimized for specific accuracy targets on CIFAR-10. Each variant (93, 94, 95, 96) represents the target accuracy percentage.
+
+All networks use:
+- Whitening convolution as the first layer
+- Three convolutional blocks with pooling
+- GELU activation functions
+- FP16 mixed precision training
+- Channels-last memory format for efficiency
+
+## make_net93
+
+Creates a network optimized for 93% accuracy with minimal computational cost.
+
+```python
+def make_net93(
+    widths={'block1': 64, 'block2': 128, 'block3': 128},
+    batchnorm_momentum=0.6
+)
+```
+
+### Parameters
+
+<ParamField path="widths" type="dict" default="{'block1': 64, 'block2': 128, 'block3': 128}">
+  Dictionary specifying the number of channels for each convolutional block
+</ParamField>
+
+<ParamField path="batchnorm_momentum" type="float" default="0.6">
+  Momentum parameter for batch normalization layers
+</ParamField>
+
+### Returns
+
+A PyTorch `nn.Sequential` model configured with:
+- Block widths: 64, 128, 128 channels
+- FP16 precision
+- Channels-last memory format
+- Frozen whitening layer weights
+
+### Architecture
+
+- Whitening convolution (3 → 24 channels, 2x2 kernel)
+- ConvGroup 1: 24 → 64 channels
+- ConvGroup 2: 64 → 128 channels
+- ConvGroup 3: 128 → 128 channels
+- Global pooling and linear classifier
+
+### Example
+
+```python
+import airbench
+
+# Create 93% accuracy network
+model = airbench.make_net93()
+
+# Custom widths
+model = airbench.make_net93(
+    widths={'block1': 32, 'block2': 64, 'block3': 64},
+    batchnorm_momentum=0.7
+)
+```
+
+## make_net94
+
+Creates a network optimized for 94% accuracy with moderate computational cost.
+
+```python
+def make_net94(
+    widths={'block1': 64, 'block2': 256, 'block3': 256},
+    batchnorm_momentum=0.6
+)
+```
+
+### Parameters
+
+<ParamField path="widths" type="dict" default="{'block1': 64, 'block2': 256, 'block3': 256}">
+  Dictionary specifying the number of channels for each convolutional block
+</ParamField>
+
+<ParamField path="batchnorm_momentum" type="float" default="0.6">
+  Momentum parameter for batch normalization layers
+</ParamField>
+
+### Returns
+
+A PyTorch `nn.Sequential` model configured with:
+- Block widths: 64, 256, 256 channels
+- FP16 precision
+- Channels-last memory format
+- Frozen whitening layer weights
+
+### Architecture
+
+- Whitening convolution (3 → 24 channels, 2x2 kernel)
+- ConvGroup 1: 24 → 64 channels
+- ConvGroup 2: 64 → 256 channels
+- ConvGroup 3: 256 → 256 channels
+- Global pooling and linear classifier
+
+### Example
+
+```python
+import airbench
+
+# Create 94% accuracy network
+model = airbench.make_net94()
+
+# Use with training
+model = airbench.train94(make_net=airbench.make_net94)
+```
+
+## make_net95
+
+Creates a network optimized for 95% accuracy with increased capacity.
+
+```python
+def make_net95(
+    widths={'block1': 128, 'block2': 384, 'block3': 384},
+    batchnorm_momentum=0.6
+)
+```
+
+### Parameters
+
+<ParamField path="widths" type="dict" default="{'block1': 128, 'block2': 384, 'block3': 384}">
+  Dictionary specifying the number of channels for each convolutional block
+</ParamField>
+
+<ParamField path="batchnorm_momentum" type="float" default="0.6">
+  Momentum parameter for batch normalization layers
+</ParamField>
+
+### Returns
+
+A PyTorch `nn.Sequential` model configured with:
+- Block widths: 128, 384, 384 channels
+- FP16 precision
+- Channels-last memory format
+- Frozen whitening layer weights
+
+### Architecture
+
+- Whitening convolution (3 → 24 channels, 2x2 kernel)
+- ConvGroup 1: 24 → 128 channels
+- ConvGroup 2: 128 → 384 channels
+- ConvGroup 3: 384 → 384 channels
+- Global pooling and linear classifier
+
+### Example
+
+```python
+import airbench
+
+# Create 95% accuracy network
+model = airbench.make_net95()
+
+# Custom configuration
+model = airbench.make_net95(
+    widths={'block1': 96, 'block2': 256, 'block3': 256}
+)
+```
+
+## make_net96
+
+Creates a network optimized for 96% accuracy with residual connections.
+
+```python
+def make_net96()
+```
+
+### Parameters
+
+This function takes no parameters. Network configuration is determined by internal hyperparameters.
+
+### Returns
+
+A PyTorch `nn.Sequential` model configured with:
+- Block widths: 128, 384, 512 channels
+- Residual connections in each ConvGroup
+- FP16 precision
+- Channels-last memory format
+- Frozen whitening layer weights
+
+### Architecture
+
+- Whitening convolution (3 → 24 channels, 2x2 kernel)
+- ConvGroup 1: 24 → 128 channels (3 convs with residual)
+- ConvGroup 2: 128 → 384 channels (3 convs with residual)
+- ConvGroup 3: 384 → 512 channels (3 convs with residual)
+- Global pooling and linear classifier
+
+### Key Differences
+
+- Uses 3 convolutions per block (vs 2 in other variants)
+- Includes residual connections
+- No configurable parameters (uses fixed hyperparameters)
+- Deeper architecture for higher accuracy
+
+### Example
+
+```python
+import airbench
+
+# Create 96% accuracy network
+model = airbench.make_net96()
+
+# Use with training
+model = airbench.train96(make_net=airbench.make_net96)
+```
+
+## Network Comparison
+
+| Function | Target Accuracy | Block Widths | Residuals | Train Epochs | Parameters |
+|----------|----------------|--------------|-----------|--------------|------------|
+| `make_net93` | 93% | 64/128/128 | No | 11.0 | Configurable |
+| `make_net94` | 94% | 64/256/256 | No | 9.9 | Configurable |
+| `make_net95` | 95% | 128/384/384 | No | 15.0 | Configurable |
+| `make_net96` | 96% | 128/384/512 | Yes | 37.0 | Fixed |
+
+## Common Features
+
+All networks include:
+
+- **Whitening layer**: Learned data preprocessing as first layer
+- **Mixed precision**: FP16 computation with FP32 batch norm
+- **Memory optimization**: Channels-last format for better performance
+- **GPU-ready**: Automatically moved to CUDA device
+- **Frozen preprocessing**: Whitening weights are not trained
+
+## See Also
+
+- [train94](/api/train94) - Training functions for each network
+- [infer](/api/infer) - Run inference with test-time augmentation
+- [evaluate](/api/evaluate) - Compute model accuracy

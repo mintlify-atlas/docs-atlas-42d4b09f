@@ -1,0 +1,197 @@
+---
+title: 'infer'
+description: 'Run model inference with optional test-time augmentation'
+---
+
+## Overview
+
+The `infer()` function performs inference on a dataset using a trained model with optional test-time augmentation (TTA). TTA improves prediction accuracy by averaging predictions over multiple augmented versions of each image.
+
+```python
+def infer(model, loader, tta_level=0)
+```
+
+## Parameters
+
+<ParamField path="model" type="torch.nn.Module" required>
+  The trained neural network model to use for inference
+</ParamField>
+
+<ParamField path="loader" type="CifarLoader" required>
+  Data loader containing the images to run inference on. Must have `images`, `labels`, and `normalize()` method
+</ParamField>
+
+<ParamField path="tta_level" type="int" default="0">
+  Level of test-time augmentation to apply:
+  - `0`: No augmentation (basic inference)
+  - `1`: Horizontal mirroring (average of original and flipped)
+  - `2`: Mirroring + translation (average over flips and small shifts)
+</ParamField>
+
+## Returns
+
+<ResponseField name="logits" type="torch.Tensor">
+  Raw logits (pre-softmax scores) for all classes, shape `(N, 10)` where N is the number of images. Use `.argmax(1)` to get predicted class labels.
+</ResponseField>
+
+## TTA Levels Explained
+
+### Level 0: Basic Inference
+
+Performs standard forward pass through the network:
+
+```python
+logits = model(images)
+```
+
+### Level 1: Mirror Augmentation
+
+Averages predictions from original and horizontally flipped images:
+
+```python
+logits = 0.5 * model(images) + 0.5 * model(images.flip(-1))
+```
+
+This helps the model be invariant to left-right flips, improving accuracy by ~0.2-0.3%.
+
+### Level 2: Mirror + Translation
+
+Averages predictions from:
+- Original and flipped images
+- Two translated versions (shifted by 1 pixel in different directions)
+
+```python
+# Average of mirror predictions
+logits_mirror = 0.5 * model(images) + 0.5 * model(images.flip(-1))
+
+# Translate images by padding and cropping
+logits_translate = average([model(shifted_images) for shifted_images in translations])
+
+# Final prediction
+logits = 0.5 * logits_mirror + 0.5 * logits_translate
+```
+
+This provides the best accuracy but is ~3x slower than basic inference.
+
+## Performance Characteristics
+
+- **Batch processing**: Images are processed in batches of 2000 for memory efficiency
+- **Inference mode**: Model is set to eval mode with `torch.no_grad()`
+- **Normalization**: Images are normalized using CIFAR-10 statistics
+- **Speed**: TTA level 0 is fastest, level 2 is ~3x slower
+
+## Example Usage
+
+### Basic Inference
+
+```python
+import airbench
+import torch
+
+# Train a model
+model = airbench.train94()
+
+# Load test data
+test_loader = airbench.CifarLoader('cifar10', train=False)
+
+# Run inference without TTA
+logits = airbench.infer(model, test_loader, tta_level=0)
+
+# Get predicted classes
+predictions = logits.argmax(1)
+
+# Get probabilities
+probs = torch.softmax(logits, dim=1)
+```
+
+### Inference with TTA
+
+```python
+import airbench
+
+# Train a model
+model = airbench.train95()
+
+# Load test data
+test_loader = airbench.CifarLoader('cifar10', train=False)
+
+# Run inference with maximum TTA
+logits = airbench.infer(model, test_loader, tta_level=2)
+
+# Compute accuracy
+accuracy = (logits.argmax(1) == test_loader.labels).float().mean()
+print(f"Accuracy with TTA: {accuracy:.4f}")
+```
+
+### Comparing TTA Levels
+
+```python
+import airbench
+
+# Train model
+model = airbench.train94()
+test_loader = airbench.CifarLoader('cifar10', train=False)
+
+# Compare different TTA levels
+for tta_level in [0, 1, 2]:
+    logits = airbench.infer(model, test_loader, tta_level=tta_level)
+    accuracy = (logits.argmax(1) == test_loader.labels).float().mean()
+    print(f"TTA level {tta_level}: {accuracy:.4f}")
+```
+
+### Using Custom Data
+
+```python
+import airbench
+import torch
+
+# Create custom loader with your data
+class CustomLoader:
+    def __init__(self, images, labels):
+        self.images = images  # Shape: (N, 3, 32, 32), FP16
+        self.labels = labels  # Shape: (N,)
+        self.normalize = airbench.utils.T.Normalize(
+            airbench.utils.CIFAR_MEAN,
+            airbench.utils.CIFAR_STD
+        )
+
+# Load your trained model
+model = torch.load('my_model.pt')
+
+# Create loader
+loader = CustomLoader(my_images, my_labels)
+
+# Run inference
+logits = airbench.infer(model, loader, tta_level=1)
+```
+
+## Implementation Details
+
+### Memory Efficiency
+
+The function processes images in batches of 2000 to avoid out-of-memory errors:
+
+```python
+with torch.no_grad():
+    return torch.cat([infer_fn(inputs, model) for inputs in test_images.split(2000)])
+```
+
+### Translation Details
+
+For TTA level 2, images are padded by 1 pixel using reflection padding, then two crops are taken:
+- Top-left crop: `padded[:, :, 0:32, 0:32]`
+- Bottom-right crop: `padded[:, :, 2:34, 2:34]`
+
+## When to Use Each TTA Level
+
+| TTA Level | Use Case | Accuracy Gain | Speed |
+|-----------|----------|---------------|-------|
+| 0 | Fast inference, real-time applications | Baseline | 1x |
+| 1 | Good balance of speed and accuracy | +0.2-0.3% | ~2x slower |
+| 2 | Maximum accuracy, final evaluation | +0.3-0.5% | ~3x slower |
+
+## See Also
+
+- [evaluate](/api/evaluate) - Compute accuracy directly from model and loader
+- [CifarLoader](/api/cifar-loader) - Data loader for CIFAR-10
+- [train94](/api/train94) - Training functions that use TTA in evaluation

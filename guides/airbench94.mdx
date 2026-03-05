@@ -1,0 +1,238 @@
+---
+title: 'Airbench94: 94% Accuracy in 2.59 Seconds'
+description: 'Train CIFAR-10 to 94% accuracy in under 3 seconds using the Muon optimizer'
+icon: 'bolt'
+---
+
+## Overview
+
+The **airbench94_muon.py** script achieves 94.01% mean accuracy on CIFAR-10 in just 2.59 seconds on a 400W NVIDIA A100 GPU. This is one of the fastest known training methods for reaching 94% accuracy.
+
+<Info>
+**Performance**: 94.01% mean accuracy (n=200 trials) in 2.59 seconds using 0.29 PFLOPs
+</Info>
+
+## Key Features
+
+- **Muon Optimizer**: Uses the novel Muon optimizer with Newton-Schulz orthogonalization
+- **Compact Network**: Efficient architecture with whitening layer and 3 convolutional groups
+- **Fast Training**: Only 8 epochs with batch size 2000
+- **Label Smoothing**: 0.2 label smoothing for better generalization
+
+## Quick Start
+
+Run the script directly:
+
+```bash
+python airbench94_muon.py
+```
+
+Requires `torch` and `torchvision` to be installed.
+
+## Network Architecture
+
+The network uses a custom architecture optimized for speed:
+
+```python
+class CifarNet(nn.Module):
+    def __init__(self):
+        super().__init__()
+        widths = dict(block1=64, block2=256, block3=256)
+        whiten_kernel_size = 2
+        whiten_width = 2 * 3 * whiten_kernel_size**2
+        self.whiten = nn.Conv2d(3, whiten_width, whiten_kernel_size, padding=0, bias=True)
+        self.whiten.weight.requires_grad = False
+        self.layers = nn.Sequential(
+            nn.GELU(),
+            ConvGroup(whiten_width,     widths["block1"]),
+            ConvGroup(widths["block1"], widths["block2"]),
+            ConvGroup(widths["block2"], widths["block3"]),
+            nn.MaxPool2d(3),
+        )
+        self.head = nn.Linear(widths["block3"], 10, bias=False)
+```
+
+### Whitening Layer
+
+The whitening layer is initialized using eigenvalue decomposition of training patches:
+
+```python
+def init_whiten(self, train_images, eps=5e-4):
+    c, (h, w) = train_images.shape[1], self.whiten.weight.shape[2:]
+    patches = train_images.unfold(2,h,1).unfold(3,w,1).transpose(1,3).reshape(-1,c,h,w).float()
+    patches_flat = patches.view(len(patches), -1)
+    est_patch_covariance = (patches_flat.T @ patches_flat) / len(patches_flat)
+    eigenvalues, eigenvectors = torch.linalg.eigh(est_patch_covariance, UPLO="U")
+    eigenvectors_scaled = eigenvectors.T.reshape(-1,c,h,w) / torch.sqrt(eigenvalues.view(-1,1,1,1) + eps)
+    self.whiten.weight.data[:] = torch.cat((eigenvectors_scaled, -eigenvectors_scaled))
+```
+
+## Muon Optimizer
+
+Muon applies orthogonal updates to weight matrices using Newton-Schulz iteration:
+
+```python
+class Muon(torch.optim.Optimizer):
+    def __init__(self, params, lr=1e-3, momentum=0, nesterov=False):
+        defaults = dict(lr=lr, momentum=momentum, nesterov=nesterov)
+        super().__init__(params, defaults)
+
+    def step(self):
+        for group in self.param_groups:
+            lr = group["lr"]
+            momentum = group["momentum"]
+            for p in group["params"]:
+                g = p.grad
+                if g is None:
+                    continue
+                state = self.state[p]
+
+                if "momentum_buffer" not in state.keys():
+                    state["momentum_buffer"] = torch.zeros_like(g)
+                buf = state["momentum_buffer"]
+                buf.mul_(momentum).add_(g)
+                g = g.add(buf, alpha=momentum) if group["nesterov"] else buf
+
+                p.data.mul_(len(p.data)**0.5 / p.data.norm()) # normalize the weight
+                update = zeropower_via_newtonschulz5(g.reshape(len(g), -1)).view(g.shape) # whiten the update
+                p.data.add_(update, alpha=-lr) # take a step
+```
+
+<Note>
+The Muon optimizer normalizes weights and whitens gradients, providing more stable and faster convergence than standard optimizers.
+</Note>
+
+## Training Hyperparameters
+
+Key hyperparameters from the script:
+
+<ParamField path="batch_size" type="int" default="2000">
+  Large batch size for efficient GPU utilization
+</ParamField>
+
+<ParamField path="bias_lr" type="float" default="0.053">
+  Learning rate for bias parameters
+</ParamField>
+
+<ParamField path="head_lr" type="float" default="0.67">
+  Learning rate for the classification head
+</ParamField>
+
+<ParamField path="wd" type="float" default="2e-6 * batch_size">
+  Weight decay coefficient
+</ParamField>
+
+<ParamField path="total_train_steps" type="int" default="ceil(8 * len(train_loader))">
+  Approximately 8 epochs of training
+</ParamField>
+
+## Training Process
+
+The main training loop:
+
+```python
+for epoch in range(ceil(total_train_steps / len(train_loader))):
+    model.train()
+    for inputs, labels in train_loader:
+        outputs = model(inputs, whiten_bias_grad=(step < whiten_bias_train_steps))
+        F.cross_entropy(outputs, labels, label_smoothing=0.2, reduction="sum").backward()
+        
+        # Update learning rates
+        for group in optimizer1.param_groups[:1]:
+            group["lr"] = group["initial_lr"] * (1 - step / whiten_bias_train_steps)
+        for group in optimizer1.param_groups[1:]+optimizer2.param_groups:
+            group["lr"] = group["initial_lr"] * (1 - step / total_train_steps)
+        
+        for opt in optimizers:
+            opt.step()
+        model.zero_grad(set_to_none=True)
+        step += 1
+        if step >= total_train_steps:
+            break
+```
+
+## Data Augmentation
+
+Minimal augmentation for speed:
+
+```python
+train_loader = CifarLoader("cifar10", train=True, batch_size=batch_size, 
+                           aug=dict(flip=True, translate=2))
+```
+
+- **Horizontal flip**: Applied every other epoch (alternating)
+- **Translation**: Random translation by up to 2 pixels
+- **No cutout**: Removed for faster training
+
+## Test-Time Augmentation
+
+Final evaluation uses TTA level 2:
+
+```python
+def infer_mirror_translate(inputs, net):
+    logits = infer_mirror(inputs, net)
+    pad = 1
+    padded_inputs = F.pad(inputs, (pad,)*4, "reflect")
+    inputs_translate_list = [
+        padded_inputs[:, :, 0:32, 0:32],
+        padded_inputs[:, :, 2:34, 2:34],
+    ]
+    logits_translate_list = [infer_mirror(inputs_translate, net)
+                             for inputs_translate in inputs_translate_list]
+    logits_translate = torch.stack(logits_translate_list).mean(0)
+    return 0.5 * logits + 0.5 * logits_translate
+```
+
+This creates 6 views per image (left/right × 3 translations) for robust predictions.
+
+## Performance Comparison
+
+<CardGroup cols={2}>
+  <Card title="Airbench94 (Muon)" icon="rocket">
+    **2.59s** to 94.01%
+    
+    0.29 PFLOPs
+  </Card>
+  <Card title="Standard ResNet-18" icon="hourglass">
+    **7 minutes** to 96.0%
+    
+    32.3 PFLOPs (100x slower)
+  </Card>
+</CardGroup>
+
+## Tips for Best Results
+
+<Tip>
+1. Use `torch==2.4.1` or later for optimal performance
+2. Enable `torch.backends.cudnn.benchmark = True`
+3. The model compiles with `mode="max-autotune"` on first run (warmup)
+4. Use `torch.compile` for 20% speedup over uncompiled version
+</Tip>
+
+## Running Multiple Trials
+
+The script runs 200 trials by default:
+
+```python
+model = CifarNet().cuda().to(memory_format=torch.channels_last)
+model.compile(mode="max-autotune")
+
+main("warmup", model)  # Warmup run
+accs = torch.tensor([main(run, model) for run in range(200)])
+print("Mean: %.4f    Std: %.4f" % (accs.mean(), accs.std()))
+```
+
+<Warning>
+The first run is a warmup to compile the model. Real measurements start from run 0.
+</Warning>
+
+## Next Steps
+
+<CardGroup cols={2}>
+  <Card title="Airbench96" href="/guides/airbench96" icon="arrow-up">
+    Learn about the 96% accuracy variant
+  </Card>
+  <Card title="Custom Training" href="/guides/custom-training" icon="code">
+    Build your own training loops
+  </Card>
+</CardGroup>

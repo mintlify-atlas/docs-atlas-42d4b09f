@@ -1,0 +1,345 @@
+---
+title: 'Frequently Asked Questions'
+description: 'Common questions about CIFAR-10 Airbench'
+---
+
+## General Questions
+
+<AccordionGroup>
+  <Accordion title="What GPU do I need to run Airbench?">
+    The benchmark timings are measured on an NVIDIA A100 GPU (400W), but Airbench works on any CUDA-capable GPU. 
+    
+    **GPU Requirements:**
+    - Minimum: Any NVIDIA GPU with CUDA support and at least 8GB VRAM
+    - Recommended: NVIDIA A100, V100, or RTX 4090 for optimal performance
+    - Budget option: RTX 3060 or higher will work but with longer training times
+    
+    **Note:** Training times will vary based on your GPU model. For example, a V100 will be approximately 30% slower than an A100, while consumer GPUs like the RTX 3090 may be 2-3x slower.
+  </Accordion>
+
+  <Accordion title="What are the software dependencies?">
+    Airbench has minimal dependencies, making it easy to get started:
+    
+    **Required:**
+    - Python 3.7 or higher
+    - PyTorch (any recent version, benchmarks use 2.4.1)
+    - torchvision
+    
+    **Installation:**
+    ```bash
+    pip install torch torchvision
+    ```
+    
+    Or install airbench as a package:
+    ```bash
+    pip install airbench
+    ```
+    
+    That's it! No other dependencies are required for basic usage.
+  </Accordion>
+
+  <Accordion title="How long does training actually take?">
+    Training times depend on the accuracy target and your hardware:
+    
+    **On NVIDIA A100 (400W):**
+    - 94% accuracy: 2.59 seconds
+    - 95% accuracy: 10.4 seconds (legacy)
+    - 96% accuracy: 27.3 seconds
+    
+    **On other GPUs (approximate):**
+    - NVIDIA V100: 1.3x - 1.5x longer
+    - RTX 4090: 1.5x - 2x longer
+    - RTX 3090: 2x - 3x longer
+    - RTX 3060: 3x - 4x longer
+    
+    Compare this to standard ResNet-18 training which takes 7 minutes to reach 96% accuracy even on an A100.
+  </Accordion>
+
+  <Accordion title="Can I use Airbench for my own research?">
+    Yes! Airbench is designed specifically to serve as a fast baseline for research:
+    
+    **Use Cases:**
+    - Testing new optimization algorithms
+    - Data selection and active learning experiments
+    - Neural architecture search
+    - Training dynamics research
+    - Hyperparameter optimization studies
+    
+    The fast training times allow you to iterate much more quickly than with traditional training methods. You can run hundreds of experiments in the time it would take to run a dozen standard trainings.
+    
+    See the [Custom Training guide](/guides/custom-training) for examples of how to customize Airbench for your research.
+  </Accordion>
+
+  <Accordion title="What makes Airbench so much faster than standard training?">
+    Airbench achieves its speed through a combination of techniques:
+    
+    1. **GPU-accelerated dataloader**: All data augmentation happens on GPU, eliminating CPU bottlenecks
+    2. **Optimized architecture**: Network design specifically tuned for fast training
+    3. **Efficient augmentation**: Minimal but effective augmentation strategy
+    4. **Mixed precision training**: FP16/FP32 for maximum throughput
+    5. **Advanced optimizers**: Muon optimizer for faster convergence
+    6. **Data filtering**: Focus on most informative examples (96% variant)
+    7. **Hyperparameter tuning**: Carefully optimized learning rates, batch sizes, and schedules
+    
+    See the [Research Paper](/resources/research-paper) for detailed technical explanations.
+  </Accordion>
+</AccordionGroup>
+
+## Using the Dataloader
+
+<AccordionGroup>
+  <Accordion title="Can I use the GPU-accelerated dataloader independently?">
+    Yes! The `CifarLoader` can be used in your own projects without using the full training scripts:
+    
+    ```python
+    import airbench
+    
+    train_loader = airbench.CifarLoader(
+        '/tmp/cifar10', 
+        train=True, 
+        aug=dict(flip=True, translate=4, cutout=16), 
+        batch_size=500
+    )
+    test_loader = airbench.CifarLoader(
+        '/tmp/cifar10', 
+        train=False, 
+        batch_size=1000
+    )
+    
+    for epoch in range(200):
+        for inputs, labels in train_loader:
+            # Your training code here
+            outputs = model(inputs)
+            loss = F.cross_entropy(outputs, labels)
+            # ...
+    ```
+    
+    The dataloader handles:
+    - Automatic download of CIFAR-10
+    - GPU-accelerated augmentation
+    - Efficient batching
+    - Memory management
+  </Accordion>
+
+  <Accordion title="How do I modify the data in the loader?">
+    The dataloader provides direct access to images and labels, making data modification straightforward:
+    
+    ```python
+    import airbench
+    
+    train_loader = airbench.CifarLoader(
+        '/tmp/cifar10', 
+        train=True, 
+        aug=dict(flip=True, translate=4, cutout=16), 
+        batch_size=500
+    )
+    
+    # Create a mask (any condition you want)
+    mask = (train_loader.labels < 6)  # Only use first 6 classes
+    
+    # Apply the mask
+    train_loader.images = train_loader.images[mask]
+    train_loader.labels = train_loader.labels[mask]
+    
+    print(len(train_loader))  # Updated length
+    ```
+    
+    This is particularly useful for:
+    - Data selection experiments
+    - Active learning
+    - Class imbalance studies
+    - Curriculum learning
+  </Accordion>
+
+  <Accordion title="What augmentation options are available?">
+    The `CifarLoader` supports three types of augmentation:
+    
+    **Horizontal Flip:**
+    ```python
+    aug=dict(flip=True)
+    ```
+    
+    **Random Translation:**
+    ```python
+    aug=dict(translate=4)  # Translate by up to 4 pixels
+    ```
+    
+    **Cutout Regularization:**
+    ```python
+    aug=dict(cutout=16)  # 16x16 pixel cutout
+    ```
+    
+    **Combined:**
+    ```python
+    aug=dict(flip=True, translate=4, cutout=16)
+    ```
+    
+    All augmentations are performed on GPU for maximum efficiency.
+  </Accordion>
+</AccordionGroup>
+
+## Data Selection and Experiments
+
+<AccordionGroup>
+  <Accordion title="How can I use Airbench for data selection experiments?">
+    Airbench is an excellent platform for data selection research because of its fast training times. Here's a complete example:
+    
+    ```python
+    import torch
+    from airbench import train94, infer, evaluate, CifarLoader
+    
+    # Train a network to get confidence scores
+    net = train94(label_smoothing=0)
+    
+    # Get predictions on training set
+    loader = CifarLoader('cifar10', train=True, batch_size=1000)
+    logits = infer(net, loader)
+    conf = logits.log_softmax(1).amax(1)  # confidence scores
+    
+    # Compare random selection vs. low-confidence selection
+    train_loader = CifarLoader(
+        'cifar10', 
+        train=True, 
+        batch_size=1024, 
+        aug=dict(flip=True, translate=2)
+    )
+    
+    # Random selection (60% of data)
+    mask = (torch.rand(len(train_loader.labels)) < 0.6)
+    train_loader.images = train_loader.images[mask]
+    train_loader.labels = train_loader.labels[mask]
+    train94(train_loader, epochs=16)  # ~93% accuracy
+    
+    # Low-confidence selection (60% of data)
+    train_loader = CifarLoader(
+        'cifar10', 
+        train=True, 
+        batch_size=1024, 
+        aug=dict(flip=True, translate=2)
+    )
+    mask = (conf < conf.float().quantile(0.6))
+    train_loader.images = train_loader.images[mask]
+    train_loader.labels = train_loader.labels[mask]
+    train94(train_loader, epochs=16)  # ~94% accuracy
+    ```
+    
+    This entire experiment runs in under 20 seconds on an A100!
+  </Accordion>
+
+  <Accordion title="What training functions are available?">
+    Airbench provides training functions for different accuracy targets:
+    
+    ```python
+    import airbench
+    
+    # Train to 93% accuracy
+    net = airbench.train93()
+    
+    # Train to 94% accuracy
+    net = airbench.train94()
+    
+    # Train to 95% accuracy
+    net = airbench.train95()
+    
+    # Train to 96% accuracy
+    net = airbench.train96()
+    ```
+    
+    Each function returns a trained PyTorch model that can be used for inference or further training.
+    
+    **Evaluation functions:**
+    ```python
+    from airbench import infer, evaluate
+    
+    # Get logits on a dataset
+    logits = infer(net, test_loader)
+    
+    # Evaluate accuracy
+    acc = evaluate(net, test_loader)
+    ```
+  </Accordion>
+
+  <Accordion title="Can I customize the training hyperparameters?">
+    Yes, all training functions accept various parameters for customization:
+    
+    ```python
+    net = airbench.train94(
+        train_loader=custom_loader,  # Use custom data
+        epochs=20,                    # Number of epochs
+        label_smoothing=0.2,          # Label smoothing amount
+        lr=0.5,                       # Learning rate
+        momentum=0.9,                 # SGD momentum
+        weight_decay=0.0001,          # Weight decay
+        run=0                         # Random seed
+    )
+    ```
+    
+    See the [API Reference](/api/cifar-loader) for complete documentation of all parameters.
+  </Accordion>
+</AccordionGroup>
+
+## Performance and Optimization
+
+<AccordionGroup>
+  <Accordion title="How do the legacy scripts differ from current records?">
+    The legacy scripts represent the original paper results before recent improvements:
+    
+    **Legacy (Paper Results):**
+    - Used in the original arXiv paper
+    - Standard optimizers (SGD)
+    - No advanced data filtering
+    - Training times: 3.09s (94%), 34.7s (96%)
+    
+    **Current (New Records):**
+    - Muon optimizer for 94% accuracy (2.59s)
+    - Data filtering for 96% accuracy (27.3s)
+    - 16-21% faster than legacy
+    
+    Both sets of scripts are maintained for reproducibility and comparison purposes.
+  </Accordion>
+
+  <Accordion title="What is the Muon optimizer and why is it faster?">
+    The [Muon optimizer](https://kellerjordan.github.io/posts/muon/) is a novel optimization algorithm that improves upon standard SGD:
+    
+    **Key advantages:**
+    - Faster convergence to target accuracy
+    - More stable training dynamics
+    - Better generalization properties
+    - Adaptive learning rate behavior
+    
+    **Performance impact:**
+    - Reduces 94% training time from 3.09s to 2.59s (16% improvement)
+    - Maintains or improves final accuracy
+    - Works well with the existing Airbench architecture
+    
+    The Muon optimizer is particularly effective for fast training scenarios where every fraction of a second matters.
+  </Accordion>
+
+  <Accordion title="Why are the benchmarks measured in PFLOPs?">
+    PFLOPs (petaFLOPs = 10^15 floating point operations) provide a hardware-independent measure of computational cost:
+    
+    **Benefits of PFLOPs:**
+    - Fair comparison across different GPU models
+    - Measures actual computation, not wall-clock time
+    - Useful for theoretical analysis
+    - Allows comparison with other architectures
+    
+    **Airbench efficiency:**
+    - 94% accuracy: 0.29 PFLOPs (vs 32.3 for ResNet-18)
+    - 96% accuracy: 3.1 PFLOPs (vs 32.3 for ResNet-18)
+    
+    This represents a 10x reduction in computational cost for the same accuracy!
+  </Accordion>
+</AccordionGroup>
+
+## Still Have Questions?
+
+<CardGroup cols={2}>
+  <Card title="GitHub Issues" icon="github" href="https://github.com/KellerJordan/cifar10-airbench/issues">
+    Report bugs or ask questions on GitHub
+  </Card>
+  
+  <Card title="Research Paper" icon="file-lines" href="/resources/research-paper">
+    Read the detailed technical documentation
+  </Card>
+</CardGroup>

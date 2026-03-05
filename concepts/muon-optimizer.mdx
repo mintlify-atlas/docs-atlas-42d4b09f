@@ -1,0 +1,276 @@
+---
+title: Muon Optimizer
+description: Understanding the Muon optimizer and its Newton-Schulz orthogonalization
+---
+
+## Overview
+
+The **Muon optimizer** is a novel optimization algorithm used in `airbench94_muon.py` that applies orthogonal updates to weight matrices. It uses Newton-Schulz iteration to compute approximate matrix orthogonalization, enabling more stable and effective training.
+
+## What is Muon?
+
+Muon is an optimizer specifically designed for convolutional filters. Instead of standard gradient descent, it:
+
+1. **Normalizes weights** to have unit norm
+2. **Whitens gradients** through orthogonalization
+3. **Takes scaled orthogonal steps**
+
+This approach is particularly effective for convolutional neural networks.
+
+## Implementation
+
+### Complete Muon Optimizer
+
+```python
+class Muon(torch.optim.Optimizer):
+    def __init__(self, params, lr=1e-3, momentum=0, nesterov=False):
+        if lr < 0.0:
+            raise ValueError(f"Invalid learning rate: {lr}")
+        if momentum < 0.0:
+            raise ValueError(f"Invalid momentum value: {momentum}")
+        if nesterov and momentum <= 0:
+            raise ValueError("Nesterov momentum requires a momentum")
+        defaults = dict(lr=lr, momentum=momentum, nesterov=nesterov)
+        super().__init__(params, defaults)
+
+    def step(self):
+        for group in self.param_groups:
+            lr = group["lr"]
+            momentum = group["momentum"]
+            for p in group["params"]:
+                g = p.grad
+                if g is None:
+                    continue
+                state = self.state[p]
+
+                if "momentum_buffer" not in state.keys():
+                    state["momentum_buffer"] = torch.zeros_like(g)
+                buf = state["momentum_buffer"]
+                buf.mul_(momentum).add_(g)
+                g = g.add(buf, alpha=momentum) if group["nesterov"] else buf
+
+                # Normalize the weight
+                p.data.mul_(len(p.data)**0.5 / p.data.norm())
+                
+                # Whiten the update through orthogonalization
+                update = zeropower_via_newtonschulz5(g.reshape(len(g), -1)).view(g.shape)
+                
+                # Take a step
+                p.data.add_(update, alpha=-lr)
+```
+
+### The Three Key Steps
+
+#### 1. Weight Normalization
+
+```python
+p.data.mul_(len(p.data)**0.5 / p.data.norm())
+```
+
+Normalizes weight matrix to have norm equal to `sqrt(output_channels)`.
+
+**Why?** Maintains consistent weight scale throughout training.
+
+#### 2. Gradient Whitening
+
+```python
+update = zeropower_via_newtonschulz5(g.reshape(len(g), -1)).view(g.shape)
+```
+
+Orthogonalizes the gradient matrix using Newton-Schulz iteration.
+
+**Why?** Decorrelates gradient components for more effective updates.
+
+#### 3. Orthogonal Update
+
+```python
+p.data.add_(update, alpha=-lr)
+```
+
+Applies the orthogonalized gradient with learning rate scaling.
+
+## Newton-Schulz Iteration
+
+The core of Muon is the Newton-Schulz iteration for computing matrix orthogonalization:
+
+```python
+@torch.compile
+def zeropower_via_newtonschulz5(G, steps=3, eps=1e-7):
+    """
+    Newton-Schulz iteration to compute the zeroth power / orthogonalization of G. 
+    We opt to use a quintic iteration whose coefficients are selected to maximize 
+    the slope at zero. For the purpose of minimizing steps, it turns out to be 
+    empirically effective to keep increasing the slope at zero even beyond the 
+    point where the iteration no longer converges all the way to one everywhere
+    on the interval. This iteration therefore does not produce UV^T but rather 
+    something like US'V^T where S' is diagonal with S_{ii}' ~ Uniform(0.5, 1.5), 
+    which turns out not to hurt model performance at all relative to UV^T, 
+    where USV^T = G is the SVD.
+    """
+    assert len(G.shape) == 2
+    a, b, c = (3.4445, -4.7750,  2.0315)
+    X = G.bfloat16()
+    X /= (X.norm() + eps)  # Ensure top singular value <= 1
+    
+    if G.size(0) > G.size(1):
+        X = X.T
+    
+    for _ in range(steps):
+        A = X @ X.T
+        B = b * A + c * A @ A
+        X = a * X + B @ X
+    
+    if G.size(0) > G.size(1):
+        X = X.T
+    
+    return X
+```
+
+### Algorithm Breakdown
+
+#### Quintic Iteration
+
+The iteration formula is:
+```
+A = X @ X.T
+B = b * A + c * A²
+X_{new} = a * X + B @ X
+```
+
+With coefficients:
+- `a = 3.4445`
+- `b = -4.7750`
+- `c = 2.0315`
+
+**These coefficients maximize convergence speed** by optimizing the slope at zero.
+
+#### Steps
+
+1. **Normalization**: Scale so largest singular value ≤ 1
+2. **Transpose if needed**: Work with narrower dimension for efficiency
+3. **Iterate**: Apply quintic iteration 3 times
+4. **Transpose back**: Return to original orientation
+
+#### Mathematical Background
+
+For matrix `G` with SVD `G = U S V^T`:
+- Goal: Compute `U V^T` (orthogonalized version)
+- Newton-Schulz iteration converges to `U S' V^T`
+- Where `S'` is approximately identity (singular values ~ 1)
+
+**Empirical finding**: Even with `S_{ii}' ∈ [0.5, 1.5]`, performance is excellent.
+
+### Why BFloat16?
+
+```python
+X = G.bfloat16()
+```
+
+BFloat16 provides:
+- **Speed**: Faster matrix operations on modern GPUs
+- **Sufficient precision**: 8 exponent bits handle the iteration well
+- **Memory efficiency**: Reduces memory bandwidth
+
+### Compilation
+
+```python
+@torch.compile
+def zeropower_via_newtonschulz5(...):
+```
+
+PyTorch compilation optimizes the iteration loop and matrix operations for maximum performance.
+
+## Usage in Airbench
+
+Muon is applied only to convolutional filters:
+
+```python
+# Separate parameters
+filter_params = [p for p in model.parameters() if len(p.shape) == 4 and p.requires_grad]
+norm_biases = [p for n, p in model.named_parameters() if "norm" in n and p.requires_grad]
+
+# Create separate optimizers
+param_configs = [
+    dict(params=[model.whiten.bias], lr=bias_lr, weight_decay=wd/bias_lr),
+    dict(params=norm_biases,         lr=bias_lr, weight_decay=wd/bias_lr),
+    dict(params=[model.head.weight], lr=head_lr, weight_decay=wd/head_lr)
+]
+optimizer1 = torch.optim.SGD(param_configs, momentum=0.85, nesterov=True, fused=True)
+optimizer2 = Muon(filter_params, lr=0.24, momentum=0.6, nesterov=True)
+```
+
+### Parameter Assignment
+
+| Parameter Type | Optimizer | Learning Rate | Momentum |
+|---------------|-----------|---------------|----------|
+| Conv filters | Muon | 0.24 | 0.6 |
+| Whitening bias | SGD | 0.053 | 0.85 |
+| Norm biases | SGD | 0.053 | 0.85 |
+| Classifier head | SGD | 0.67 | 0.85 |
+
+## Why Muon Works
+
+### 1. **Gradient Conditioning**
+
+Orthogonalization decorrelates gradient components, preventing some directions from dominating.
+
+### 2. **Scale Invariance**
+
+Weight normalization makes the optimizer invariant to weight scaling, focusing on directions.
+
+### 3. **Curvature Adaptation**
+
+Orthogonal updates naturally adapt to the loss landscape curvature.
+
+### 4. **Convolutional Structure**
+
+Conv filters benefit especially from orthogonal updates due to their matrix structure.
+
+## Performance Impact
+
+### Speed
+
+- Newton-Schulz iteration: 3 steps in BFloat16
+- Compiled for efficiency
+- Minimal overhead compared to standard SGD
+
+### Convergence
+
+Using Muon for conv filters:
+- Faster convergence
+- More stable training  
+- Better final accuracy (94.01% mean)
+
+### Hyperparameter Sensitivity
+
+- Less sensitive to learning rate
+- More robust to initialization
+- Works well with lower momentum (0.6 vs 0.85)
+
+## Comparison to Standard SGD
+
+| Aspect | Standard SGD | Muon |
+|--------|-------------|------|
+| Update direction | Raw gradient | Orthogonalized |
+| Weight scale | Grows/shrinks | Normalized |
+| Conditioning | Uses raw Hessian | Whitened space |
+| Computation | Minimal | 3 matrix iterations |
+| Best for | Biases, scalars | Conv filters |
+
+## Implementation Tips
+
+1. **Apply to 4D tensors**: Muon is designed for convolutional filters (shape: `[out_ch, in_ch, h, w]`)
+2. **Use with momentum**: Momentum (0.6-0.7) improves convergence
+3. **Tune learning rate**: Typically smaller than SGD (0.1-0.3 range)
+4. **Enable compilation**: `@torch.compile` significantly speeds up iteration
+5. **Mix with SGD**: Use SGD for biases and other parameters
+
+## Further Reading
+
+The Muon optimizer is based on research in:
+- Orthogonal optimization methods
+- Newton-Schulz iteration for matrix functions
+- Whitened gradient descent
+- Second-order optimization
+
+For more details, see the research papers linked in the main repository.

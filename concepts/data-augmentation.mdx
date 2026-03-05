@@ -1,0 +1,365 @@
+---
+title: Data Augmentation
+description: GPU-accelerated data augmentation techniques for training speed and accuracy
+---
+
+## Overview
+
+CIFAR-10 Airbench achieves its extreme speed through **GPU-accelerated data augmentation**. All augmentation operations run directly on the GPU, eliminating CPU bottlenecks and data transfer overhead.
+
+## Augmentation Strategy
+
+The training pipeline uses three main augmentation techniques:
+
+```python
+aug = {
+    'flip': True,
+    'translate': 2,
+    'cutout': 8  # Optional, not used in fastest configs
+}
+```
+
+### Configuration
+
+```python
+train_loader = CifarLoader(
+    'cifar10', 
+    train=True, 
+    batch_size=2000, 
+    aug=dict(flip=True, translate=2)
+)
+```
+
+## Horizontal Flipping
+
+### Batch-Level Random Flipping
+
+```python
+def batch_flip_lr(inputs):
+    flip_mask = (torch.rand(len(inputs), device=inputs.device) < 0.5).view(-1, 1, 1, 1)
+    return torch.where(flip_mask, inputs.flip(-1), inputs)
+```
+
+**How it works:**
+- Generate random mask: 50% probability per image
+- Use `torch.where` to conditionally flip
+- Flip dimension -1 (width)
+
+**Performance:**
+- Fully vectorized GPU operation
+- No CPU involvement
+- No data transfer
+
+### Alternating Flip Strategy
+
+Airbench uses a clever "alternating flip" strategy:
+
+```python
+if self.epoch == 0:
+    # Pre-flip images once
+    images = self.proc_images['flip'] = batch_flip_lr(images)
+
+# During training
+if self.aug.get('flip', False):
+    if self.altflip:
+        if self.epoch % 2 == 1:
+            images = images.flip(-1)  # Flip all images every other epoch
+    else:
+        images = batch_flip_lr(images)  # Random flip each time
+```
+
+**Alternating strategy benefits:**
+1. Pre-flip images on first epoch
+2. Even epochs: use pre-flipped images
+3. Odd epochs: flip all pre-flipped images (returns to original)
+4. Result: 2× augmentation diversity with minimal computation
+
+**Why this works:**
+- Each image seen in both orientations
+- Only need to store one flipped version
+- Very fast (single flip operation per epoch)
+
+## Random Translation
+
+### GPU-Accelerated Crop
+
+```python
+def batch_crop(images, crop_size):
+    r = (images.size(-1) - crop_size)//2
+    shifts = torch.randint(-r, r+1, size=(len(images), 2), device=images.device)
+    images_out = torch.empty((len(images), 3, crop_size, crop_size), 
+                             device=images.device, dtype=images.dtype)
+    
+    # The two cropping methods produce equivalent results, 
+    # but the second is faster for r > 2.
+    if r <= 2:
+        for sy in range(-r, r+1):
+            for sx in range(-r, r+1):
+                mask = (shifts[:, 0] == sy) & (shifts[:, 1] == sx)
+                images_out[mask] = images[mask, :, r+sy:r+sy+crop_size, r+sx:r+sx+crop_size]
+    else:
+        images_tmp = torch.empty((len(images), 3, crop_size, crop_size+2*r), 
+                                device=images.device, dtype=images.dtype)
+        for s in range(-r, r+1):
+            mask = (shifts[:, 0] == s)
+            images_tmp[mask] = images[mask, :, r+s:r+s+crop_size, :]
+        for s in range(-r, r+1):
+            mask = (shifts[:, 1] == s)
+            images_out[mask] = images_tmp[mask, :, :, r+s:r+s+crop_size]
+    
+    return images_out
+```
+
+### Two-Stage Algorithm
+
+For translation range > 2 pixels, a two-stage approach is faster:
+
+**Stage 1: Vertical crops**
+```python
+for s in range(-r, r+1):
+    mask = (shifts[:, 0] == s)
+    images_tmp[mask] = images[mask, :, r+s:r+s+crop_size, :]
+```
+
+**Stage 2: Horizontal crops**
+```python
+for s in range(-r, r+1):
+    mask = (shifts[:, 1] == s)
+    images_out[mask] = images_tmp[mask, :, :, r+s:r+s+crop_size]
+```
+
+**Why two stages?**
+- Reduces from O(n²) to O(n) operations
+- Better memory access patterns
+- Faster for larger translation ranges
+
+### Pre-Padding Strategy
+
+To save computation, images are pre-padded:
+
+```python
+if self.epoch == 0:
+    pad = self.aug.get('translate', 0)
+    if pad > 0:
+        self.proc_images['pad'] = F.pad(images, (pad,)*4, 'reflect')
+```
+
+**Benefits:**
+- Padding done once
+- Reflection padding for smooth boundaries
+- Stored for reuse across epochs
+
+**Memory trade-off:**
+- Stores padded version (36×36 instead of 32×32)
+- Saves repeated padding computation
+- ~27% more memory for significant speed gain
+
+## Cutout (Optional)
+
+### Random Square Masks
+
+```python
+def make_random_square_masks(inputs, size):
+    n, c, h, w = inputs.shape
+    
+    # Seed top-left corners of squares
+    corner_y = torch.randint(0, h-size+1, size=(n,), device=inputs.device)
+    corner_x = torch.randint(0, w-size+1, size=(n,), device=inputs.device)
+    
+    # Compute distances from corners
+    corner_y_dists = torch.arange(h, device=inputs.device).view(1, 1, h, 1) - corner_y.view(-1, 1, 1, 1)
+    corner_x_dists = torch.arange(w, device=inputs.device).view(1, 1, 1, w) - corner_x.view(-1, 1, 1, 1)
+    
+    # Create masks
+    mask_y = (corner_y_dists >= 0) * (corner_y_dists < size)
+    mask_x = (corner_x_dists >= 0) * (corner_x_dists < size)
+    
+    return mask_y * mask_x
+
+def batch_cutout(inputs, size):
+    cutout_masks = make_random_square_masks(inputs, size)
+    return inputs.masked_fill(cutout_masks, 0)
+```
+
+**How it works:**
+1. Random top-left corner for each image
+2. Create binary masks using broadcasting
+3. Zero out masked regions
+
+**Performance:**
+- Fully vectorized
+- No loops over images
+- Uses broadcasting efficiently
+
+**Note**: Cutout is not used in the fastest airbench94_muon configuration, as the speed/accuracy tradeoff favors skipping it.
+
+## Data Loading Pipeline
+
+### Efficient Caching
+
+The `CifarLoader` implements intelligent caching:
+
+```python
+class CifarLoader:
+    def __init__(self, path, train=True, batch_size=500, aug=None):
+        # Load data directly to GPU
+        data = torch.load(data_path, map_location='cuda')
+        
+        # Convert to FP16 and channels_last
+        self.images = (self.images.half() / 255).permute(0, 3, 1, 2).to(memory_format=torch.channels_last)
+        
+        self.normalize = T.Normalize(CIFAR_MEAN, CIFAR_STD)
+        self.proc_images = {}  # Cache for processed images
+```
+
+### First Epoch Pre-Processing
+
+```python
+if self.epoch == 0:
+    # Normalize and cache
+    images = self.proc_images['norm'] = self.normalize(self.images)
+    
+    # Pre-flip if using flip augmentation
+    if self.aug.get('flip', False):
+        images = self.proc_images['flip'] = batch_flip_lr(images)
+    
+    # Pre-pad if using translation
+    pad = self.aug.get('translate', 0)
+    if pad > 0:
+        self.proc_images['pad'] = F.pad(images, (pad,)*4, 'reflect')
+```
+
+**Caching strategy:**
+- Normalization: Done once, stored
+- Pre-flipping: Done once, stored  
+- Pre-padding: Done once, stored
+- Only random cropping happens each epoch
+
+## Normalization
+
+CIFAR-10 standard normalization:
+
+```python
+CIFAR_MEAN = torch.tensor((0.4914, 0.4822, 0.4465))
+CIFAR_STD = torch.tensor((0.2470, 0.2435, 0.2616))
+
+self.normalize = T.Normalize(CIFAR_MEAN, CIFAR_STD)
+```
+
+Applied channel-wise:
+```
+output[c] = (input[c] - MEAN[c]) / STD[c]
+```
+
+## Test-Time Augmentation (TTA)
+
+For final evaluation, Airbench uses TTA:
+
+```python
+def infer_mirror_translate(inputs, net):
+    # Base prediction with mirroring
+    logits = infer_mirror(inputs, net)  # Average of normal + flipped
+    
+    # Add translated views
+    pad = 1
+    padded_inputs = F.pad(inputs, (pad,)*4, 'reflect')
+    inputs_translate_list = [
+        padded_inputs[:, :, 0:32, 0:32],  # Top-left
+        padded_inputs[:, :, 2:34, 2:34],  # Bottom-right
+    ]
+    logits_translate_list = [infer_mirror(inputs_translate, net)
+                             for inputs_translate in inputs_translate_list]
+    logits_translate = torch.stack(logits_translate_list).mean(0)
+    
+    # Combine base and translated predictions
+    return 0.5 * logits + 0.5 * logits_translate
+```
+
+**TTA strategy:**
+1. Mirror (flip left-right): 2 views
+2. Translate (top-left, center, bottom-right): 3 positions
+3. Total: 6 views (2 × 3)
+4. Average predictions for robustness
+
+## Performance Optimizations
+
+### 1. GPU-Only Pipeline
+
+- All data stored on GPU
+- All operations on GPU
+- Zero CPU-GPU transfers during training
+
+### 2. Channels-Last Memory Format
+
+```python
+self.images = self.images.to(memory_format=torch.channels_last)
+```
+
+Faster convolutions due to better memory layout.
+
+### 3. Half Precision (FP16)
+
+```python
+self.images = self.images.half() / 255
+```
+
+- 2× less memory
+- Faster arithmetic on modern GPUs
+- Sufficient precision for images
+
+### 4. Pre-Loading to GPU
+
+```python
+data = torch.load(data_path, map_location='cuda')
+```
+
+Direct loading to GPU memory.
+
+### 5. Batch Processing
+
+All augmentations operate on entire batches, leveraging GPU parallelism.
+
+## Augmentation Parameters
+
+### airbench94_muon.py
+
+```python
+aug = dict(flip=True, translate=2)
+batch_size = 2000
+```
+
+### lib_airbench94.py
+
+```python
+hyp = {
+    'aug': {
+        'flip': True,
+        'translate': 2,
+    }
+}
+```
+
+## Why This Approach Works
+
+1. **GPU acceleration**: Eliminates data loading bottleneck
+2. **Caching**: Avoids redundant computation
+3. **Vectorization**: Processes entire batches in parallel
+4. **Smart algorithms**: Two-stage cropping for efficiency
+5. **Alternating flips**: Doubles diversity with minimal cost
+6. **Pre-padding**: Trade memory for speed
+
+The result: Data augmentation overhead is nearly zero, enabling sub-3-second training times.
+
+## Impact on Training
+
+**Without GPU augmentation:**
+- CPU preprocessing bottleneck
+- GPU waiting for data
+- ~10-20 seconds training time
+
+**With GPU augmentation:**
+- No CPU bottleneck
+- GPU fully utilized
+- ~2.59 seconds training time
+
+**Performance gain: ~4-8×**

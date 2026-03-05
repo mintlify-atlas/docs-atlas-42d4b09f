@@ -1,0 +1,388 @@
+---
+title: Installation
+description: Set up CIFAR-10 Airbench on your system
+---
+
+## System Requirements
+
+Before installing Airbench, ensure your system meets these requirements:
+
+<CardGroup cols={2}>
+  <Card title="GPU" icon="microchip">
+    NVIDIA GPU with CUDA support (A100 recommended for benchmarked speeds)
+  </Card>
+  <Card title="Python" icon="python">
+    Python 3.7 or higher (3.8, 3.9, 3.10, 3.11 supported)
+  </Card>
+  <Card title="CUDA" icon="cube">
+    CUDA 11.7 or higher
+  </Card>
+  <Card title="Memory" icon="memory">
+    At least 8GB GPU memory recommended
+  </Card>
+</CardGroup>
+
+<Warning>
+While Airbench can run on other NVIDIA GPUs, the benchmarked training times (2.59s for 94%, 27.3s for 96%) are specific to the NVIDIA A100. Other GPUs will have different performance characteristics.
+</Warning>
+
+## Installation Methods
+
+### Method 1: Install from PyPI (Recommended)
+
+The easiest way to install Airbench is via pip:
+
+```bash
+pip install airbench
+```
+
+This installs the `airbench` package which you can use as a library:
+
+```python
+import airbench
+
+# Use the GPU-accelerated dataloader
+train_loader = airbench.CifarLoader(
+    '/tmp/cifar10', 
+    train=True, 
+    aug=dict(flip=True, translate=4), 
+    batch_size=500
+)
+
+# Train a model to 94% accuracy
+model = airbench.train94()
+```
+
+<Info>
+The PyPI package includes the core utilities (`CifarLoader`, `train94`, `train95`, `train96`, `evaluate`, `infer`) but not the standalone training scripts. For the full scripts, use Method 2.
+</Info>
+
+### Method 2: Install from Source (For Scripts)
+
+To get the complete training scripts and experiments:
+
+<Steps>
+  <Step title="Clone the Repository">
+    ```bash
+    git clone https://github.com/KellerJordan/cifar10-airbench.git
+    cd cifar10-airbench
+    ```
+  </Step>
+
+  <Step title="Install Dependencies">
+    ```bash
+    pip install torch torchvision
+    ```
+
+    <Note>
+    Airbench has minimal dependencies - just PyTorch and torchvision!
+    </Note>
+  </Step>
+
+  <Step title="Verify Installation">
+    Run a quick training to verify everything works:
+
+    ```bash
+    python airbench94_muon.py
+    ```
+  </Step>
+</Steps>
+
+### Method 3: Development Installation
+
+For contributing or modifying the code:
+
+```bash
+git clone https://github.com/KellerJordan/cifar10-airbench.git
+cd cifar10-airbench
+pip install -e .
+```
+
+This installs the package in editable mode, so changes to the source code are immediately reflected.
+
+## GPU Requirements
+
+### CUDA Setup
+
+Airbench requires a CUDA-compatible PyTorch installation:
+
+<CodeGroup>
+```bash CUDA 11.8
+pip install torch torchvision --index-url https://download.pytorch.org/whl/cu118
+```
+
+```bash CUDA 12.1
+pip install torch torchvision --index-url https://download.pytorch.org/whl/cu121
+```
+
+```bash Latest (Recommended)
+pip install torch torchvision
+```
+</CodeGroup>
+
+<Tip>
+For best performance, use PyTorch 2.4.1 or later, which includes the compilation features used by Airbench.
+</Tip>
+
+### Verify CUDA Installation
+
+Check that PyTorch can see your GPU:
+
+```python
+import torch
+
+print(f"CUDA available: {torch.cuda.is_available()}")
+print(f"CUDA version: {torch.version.cuda}")
+print(f"GPU device: {torch.cuda.get_device_name(0)}")
+print(f"GPU memory: {torch.cuda.get_device_properties(0).total_memory / 1e9:.2f} GB")
+```
+
+Expected output:
+```
+CUDA available: True
+CUDA version: 12.1
+GPU device: NVIDIA A100-SXM4-40GB
+GPU memory: 40.00 GB
+```
+
+### GPU Performance Notes
+
+<Note>
+Benchmarked performance on different GPUs:
+
+| GPU | 94% Accuracy Time | 96% Accuracy Time |
+| --- | --- | --- |
+| A100 (400W) | 2.59s | 27.3s |
+| V100 (32GB) | ~8-10s | ~60-80s |
+| RTX 3090 | ~4-6s | ~40-50s |
+| RTX 4090 | ~3-4s | ~30-35s |
+
+*Times are approximate and may vary based on system configuration.*
+</Note>
+
+## Verify Installation
+
+After installation, verify everything works correctly:
+
+<Steps>
+  <Step title="Check Package Import">
+    ```python
+    import airbench
+    print(airbench.__file__)
+    ```
+  </Step>
+
+  <Step title="Test Data Loader">
+    ```python
+    import airbench
+    
+    # This will download CIFAR-10 if needed (~170MB)
+    loader = airbench.CifarLoader('/tmp/cifar10', train=True, batch_size=500)
+    print(f"Loaded {len(loader.images)} training images")
+    print(f"Number of batches: {len(loader)}")
+    ```
+
+    Expected output:
+    ```
+    Loaded 50000 training images
+    Number of batches: 100
+    ```
+  </Step>
+
+  <Step title="Run Quick Training Test">
+    ```python
+    import airbench
+    
+    # Quick warmup to test compilation
+    train_loader = airbench.CifarLoader(
+        '/tmp/cifar10', 
+        train=True, 
+        batch_size=1024, 
+        aug=dict(flip=True, translate=2)
+    )
+    model = airbench.warmup94(train_loader)
+    print("Installation verified successfully!")
+    ```
+  </Step>
+</Steps>
+
+## Package Information
+
+The Airbench package includes:
+
+**Core Training Functions:**
+- `train93()` - Train to 93% accuracy
+- `train94()` - Train to 94% accuracy  
+- `train95()` - Train to 95% accuracy
+- `train96()` - Train to 96% accuracy
+
+**Model Creation:**
+- `make_net93()` - Create 93% accuracy model
+- `make_net94()` - Create 94% accuracy model
+- `make_net95()` - Create 95% accuracy model  
+- `make_net96()` - Create 96% accuracy model
+
+**Utilities:**
+- `CifarLoader` - GPU-accelerated dataloader
+- `infer()` - Run inference with optional test-time augmentation
+- `evaluate()` - Evaluate model accuracy
+
+**Warmup Functions:**
+- `warmup93()`, `warmup94()`, `warmup95()`, `warmup96()` - Compile models without full training
+
+## Troubleshooting
+
+<AccordionGroup>
+  <Accordion title="CUDA out of memory error">
+    If you encounter CUDA out of memory errors:
+
+    1. **Reduce batch size**: Edit the training script to use a smaller batch size
+    ```python
+    batch_size = 1000  # instead of 2000
+    ```
+
+    2. **Clear GPU cache**:
+    ```python
+    import torch
+    torch.cuda.empty_cache()
+    ```
+
+    3. **Close other GPU processes**: Make sure no other programs are using your GPU
+    ```bash
+    nvidia-smi  # Check GPU usage
+    ```
+
+    4. **Use a GPU with more memory**: The A100 has 40GB which is ideal for the default settings
+  </Accordion>
+
+  <Accordion title="PyTorch not detecting GPU">
+    If PyTorch can't find your GPU:
+
+    1. **Verify NVIDIA drivers**:
+    ```bash
+    nvidia-smi
+    ```
+
+    2. **Reinstall PyTorch with CUDA**:
+    ```bash
+    pip uninstall torch torchvision
+    pip install torch torchvision --index-url https://download.pytorch.org/whl/cu121
+    ```
+
+    3. **Check CUDA compatibility**: Make sure your GPU supports the CUDA version you're using
+
+    4. **Update NVIDIA drivers**: Download latest drivers from [nvidia.com](https://www.nvidia.com/drivers)
+  </Accordion>
+
+  <Accordion title="CIFAR-10 download fails">
+    If automatic download of CIFAR-10 fails:
+
+    1. **Manual download**: Download from [https://www.cs.toronto.edu/~kriz/cifar.html](https://www.cs.toronto.edu/~kriz/cifar.html)
+
+    2. **Extract to correct location**: Place the extracted files in `./cifar10/` or specify your path:
+    ```python
+    loader = airbench.CifarLoader('/path/to/cifar10', train=True)
+    ```
+
+    3. **Check firewall/proxy**: Ensure Python can access external URLs
+
+    4. **Use a different mirror**: torchvision allows specifying download mirrors
+  </Accordion>
+
+  <Accordion title="Training is much slower than benchmarks">
+    If training is slower than expected:
+
+    1. **Check GPU model**: Benchmarks are for A100. Other GPUs will be slower
+    ```python
+    import torch
+    print(torch.cuda.get_device_name(0))
+    ```
+
+    2. **Verify PyTorch version**: Use 2.4.1 or later for compilation support
+    ```python
+    import torch
+    print(torch.__version__)  # Should be >= 2.4.1
+    ```
+
+    3. **Check for GPU throttling**: Ensure GPU isn't thermal throttling
+    ```bash
+    nvidia-smi -q -d TEMPERATURE
+    ```
+
+    4. **Enable compilation**: Make sure `torch.compile` is working
+    ```python
+    # The scripts use model.compile(mode="max-autotune")
+    # This requires PyTorch 2.0+
+    ```
+
+    5. **Disable background processes**: Close other GPU-intensive applications
+  </Accordion>
+
+  <Accordion title="Import error: No module named 'airbench'">
+    If you get import errors:
+
+    1. **Verify installation**:
+    ```bash
+    pip list | grep airbench
+    ```
+
+    2. **Check Python environment**: Make sure you're using the right environment
+    ```bash
+    which python
+    pip --version
+    ```
+
+    3. **Reinstall package**:
+    ```bash
+    pip uninstall airbench
+    pip install airbench
+    ```
+
+    4. **Use absolute imports**: When running scripts from source
+    ```python
+    import sys
+    sys.path.insert(0, '/path/to/cifar10-airbench')
+    import airbench
+    ```
+  </Accordion>
+
+  <Accordion title="RuntimeError: Expected all tensors to be on the same device">
+    This usually means tensors are on different devices (CPU vs GPU):
+
+    1. **Verify GPU availability**:
+    ```python
+    import torch
+    assert torch.cuda.is_available(), "CUDA not available!"
+    ```
+
+    2. **Check data loader**: CifarLoader loads data to GPU by default
+    ```python
+    # The loader uses map_location='cuda' internally
+    loader = airbench.CifarLoader('/tmp/cifar10', train=True)
+    ```
+
+    3. **Ensure model is on GPU**: Models should be on CUDA
+    ```python
+    model = airbench.make_net94().cuda()
+    ```
+  </Accordion>
+</AccordionGroup>
+
+## Getting Help
+
+If you encounter issues not covered here:
+
+<CardGroup cols={2}>
+  <Card title="GitHub Issues" icon="github" href="https://github.com/KellerJordan/cifar10-airbench/issues">
+    Report bugs or request features
+  </Card>
+  <Card title="Discussions" icon="comments" href="https://github.com/KellerJordan/cifar10-airbench/discussions">
+    Ask questions and share ideas
+  </Card>
+</CardGroup>
+
+## Next Steps
+
+<Card title="Quickstart Guide" icon="rocket" href="/quickstart">
+  Now that you have Airbench installed, follow the quickstart guide to train your first model!
+</Card>

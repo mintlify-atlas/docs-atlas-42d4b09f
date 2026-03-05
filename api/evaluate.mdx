@@ -1,0 +1,226 @@
+---
+title: 'evaluate'
+description: 'Compute model accuracy with optional test-time augmentation'
+---
+
+## Overview
+
+The `evaluate()` function computes the classification accuracy of a trained model on a dataset. It internally uses the [infer()](/api/infer) function to generate predictions and compares them against ground truth labels.
+
+```python
+def evaluate(model, loader, tta_level=0)
+```
+
+## Parameters
+
+<ParamField path="model" type="torch.nn.Module" required>
+  The trained neural network model to evaluate
+</ParamField>
+
+<ParamField path="loader" type="CifarLoader" required>
+  Data loader containing the images and labels to evaluate on. Must have `images`, `labels`, and `normalize()` method
+</ParamField>
+
+<ParamField path="tta_level" type="int" default="0">
+  Level of test-time augmentation to apply:
+  - `0`: No augmentation (basic inference)
+  - `1`: Horizontal mirroring (average of original and flipped)
+  - `2`: Mirroring + translation (average over flips and small shifts)
+</ParamField>
+
+## Returns
+
+<ResponseField name="accuracy" type="float">
+  Classification accuracy as a float between 0.0 and 1.0 (multiply by 100 for percentage)
+</ResponseField>
+
+## How It Works
+
+The function performs three steps:
+
+1. **Generate predictions** using `infer()` with specified TTA level
+2. **Get predicted classes** by taking argmax of logits
+3. **Compare with ground truth** and compute mean accuracy
+
+```python
+def evaluate(model, loader, tta_level=0):
+    logits = infer(model, loader, tta_level)
+    return (logits.argmax(1) == loader.labels).float().mean().item()
+```
+
+## Example Usage
+
+### Basic Evaluation
+
+```python
+import airbench
+
+# Train a model
+model = airbench.train94()
+
+# Load test data
+test_loader = airbench.CifarLoader('cifar10', train=False)
+
+# Evaluate without TTA
+accuracy = airbench.evaluate(model, test_loader, tta_level=0)
+print(f"Test accuracy: {accuracy * 100:.2f}%")
+```
+
+### Evaluation with TTA
+
+```python
+import airbench
+
+# Train a model
+model = airbench.train95()
+
+# Load test data
+test_loader = airbench.CifarLoader('cifar10', train=False)
+
+# Evaluate with maximum TTA
+accuracy = airbench.evaluate(model, test_loader, tta_level=2)
+print(f"Test accuracy (TTA): {accuracy * 100:.2f}%")
+```
+
+### Compare TTA Levels
+
+```python
+import airbench
+
+# Train model
+model = airbench.train94()
+test_loader = airbench.CifarLoader('cifar10', train=False)
+
+print("Accuracy comparison:")
+for tta_level in [0, 1, 2]:
+    accuracy = airbench.evaluate(model, test_loader, tta_level=tta_level)
+    print(f"  TTA level {tta_level}: {accuracy * 100:.2f}%")
+
+# Example output:
+# Accuracy comparison:
+#   TTA level 0: 93.82%
+#   TTA level 1: 94.15%
+#   TTA level 2: 94.31%
+```
+
+### Evaluate on Training Set
+
+```python
+import airbench
+
+# Train model
+model = airbench.train93()
+
+# Evaluate on training data (without augmentation)
+train_loader = airbench.CifarLoader('cifar10', train=True, batch_size=2000)
+train_accuracy = airbench.evaluate(model, train_loader, tta_level=0)
+print(f"Training accuracy: {train_accuracy * 100:.2f}%")
+
+# Evaluate on test data
+test_loader = airbench.CifarLoader('cifar10', train=False)
+test_accuracy = airbench.evaluate(model, test_loader, tta_level=2)
+print(f"Test accuracy: {test_accuracy * 100:.2f}%")
+```
+
+### Multiple Model Comparison
+
+```python
+import airbench
+
+# Train different models
+models = {
+    '93': airbench.train93(verbose=False),
+    '94': airbench.train94(verbose=False),
+    '95': airbench.train95(verbose=False),
+}
+
+# Evaluate all models
+test_loader = airbench.CifarLoader('cifar10', train=False)
+
+print("Model comparison:")
+for name, model in models.items():
+    accuracy = airbench.evaluate(model, test_loader, tta_level=2)
+    print(f"  Model {name}: {accuracy * 100:.2f}%")
+```
+
+### Custom Evaluation Loop
+
+```python
+import airbench
+
+# Train model
+model = airbench.train94()
+test_loader = airbench.CifarLoader('cifar10', train=False)
+
+# Evaluate and get detailed statistics
+accuracy = airbench.evaluate(model, test_loader, tta_level=2)
+
+# Also get per-class accuracy
+logits = airbench.infer(model, test_loader, tta_level=2)
+predictions = logits.argmax(1)
+
+for class_idx, class_name in enumerate(test_loader.classes):
+    mask = test_loader.labels == class_idx
+    class_accuracy = (predictions[mask] == class_idx).float().mean()
+    print(f"{class_name}: {class_accuracy * 100:.2f}%")
+
+print(f"\nOverall: {accuracy * 100:.2f}%")
+```
+
+## Performance Considerations
+
+### Speed vs Accuracy Trade-off
+
+| TTA Level | Relative Speed | Typical Accuracy Gain |
+|-----------|----------------|----------------------|
+| 0 (none) | 1x (fastest) | Baseline |
+| 1 (mirror) | ~0.5x | +0.2-0.3% |
+| 2 (mirror+translate) | ~0.33x | +0.3-0.5% |
+
+### Memory Usage
+
+- Images are processed in batches of 2000
+- Memory usage scales with batch size, not total dataset size
+- TTA levels 1 and 2 temporarily use more memory for augmented copies
+
+### When to Use Each TTA Level
+
+- **TTA 0**: During training for quick validation checks
+- **TTA 1**: For balanced speed/accuracy in production
+- **TTA 2**: For final benchmark evaluation and paper results
+
+## Accuracy Expectations
+
+| Model | TTA 0 | TTA 1 | TTA 2 |
+|-------|-------|-------|-------|
+| make_net93 | ~92.8% | ~93.0% | ~93.0% |
+| make_net94 | ~93.8% | ~94.0% | ~94.0% |
+| make_net95 | ~94.8% | ~95.0% | ~95.0% |
+| make_net96 | ~95.8% | ~96.0% | ~96.0% |
+
+## Implementation Details
+
+### Under the Hood
+
+The `evaluate()` function is a simple wrapper around `infer()`:
+
+```python
+def evaluate(model, loader, tta_level=0):
+    logits = infer(model, loader, tta_level)  # Get predictions
+    return (logits.argmax(1) == loader.labels).float().mean().item()  # Compute accuracy
+```
+
+### Relationship to Training
+
+The training functions use `evaluate()` during training to report validation accuracy:
+
+```python
+val_acc = evaluate(model, test_loader, tta_level=0)  # Quick check
+tta_val_acc = evaluate(model, test_loader, tta_level=2)  # Final accuracy
+```
+
+## See Also
+
+- [infer](/api/infer) - Get raw logits for custom evaluation
+- [CifarLoader](/api/cifar-loader) - Data loader for CIFAR-10
+- [train94](/api/train94) - Training functions that use evaluate()

@@ -1,0 +1,246 @@
+---
+title: Optimization Techniques
+description: Advanced optimization strategies including decoupled hyperparameters and learning rate schedules
+---
+
+## Decoupled Hyperparameters
+
+One of the key innovations in CIFAR-10 Airbench is the use of **decoupled hyperparameters** that can be tuned independently. This dramatically simplifies hyperparameter search.
+
+### The Problem with Standard Parametrization
+
+In standard SGD with momentum, hyperparameters are coupled:
+
+- Increasing momentum scales step size by `1 + 1/(1 - momentum)`
+- Increasing learning rate also increases weight decay effect
+- This means changing one hyperparameter requires retuning others
+
+### The Solution: Decoupling
+
+Airbench expresses hyperparameters in a decoupled form:
+
+```python
+hyp = {
+    'opt': {
+        'batch_size': 1024,
+        'lr': 11.5,              # learning rate per 1024 examples
+        'momentum': 0.85,
+        'weight_decay': 0.0153,  # weight decay per 1024 examples
+        'bias_scaler': 64.0,     # scales up LR for biases
+    }
+}
+```
+
+### Converting to PyTorch Parameters
+
+The decoupled parameters are converted for use with PyTorch SGD:
+
+```python
+kilostep_scale = 1024 * (1 + 1 / (1 - momentum))  # ≈ 7509 for momentum=0.85
+lr = learning_rate / kilostep_scale               # Actual PyTorch LR
+wd = weight_decay * batch_size / kilostep_scale   # Actual weight decay
+```
+
+**Key insight**: With Nesterov momentum, the effective step size is:
+```
+step_size = lr * (1 + momentum / (1 - momentum))
+```
+
+By dividing the learning rate by this factor, we ensure the step size equals the gradient scale, independent of momentum.
+
+### Benefits
+
+1. **Independent tuning**: Change momentum without retuning learning rate
+2. **Predictable scaling**: Learning rate directly controls step size
+3. **Decoupled weight decay**: Weight decay strength independent of learning rate
+4. **Faster hyperparameter search**: Fewer interdependencies
+
+## Learning Rate Schedules
+
+### Main Training Schedule
+
+Airbench uses a triangular learning rate schedule with warmup and warmdown:
+
+```python
+def get_lr(step):
+    warmup_steps = int(total_train_steps * 0.23)  # 23% warmup
+    warmdown_steps = total_train_steps - warmup_steps
+    
+    if step < warmup_steps:
+        # Linear warmup from 0.2 to 1.0
+        frac = step / warmup_steps
+        return 0.2 * (1 - frac) + 1.0 * frac
+    else:
+        # Linear warmdown from 1.0 to 0.07
+        frac = (step - warmup_steps) / warmdown_steps
+        return 1.0 * (1 - frac) + 0.07 * frac
+```
+
+**Schedule phases:**
+1. **Warmup** (23% of steps): 0.2 → 1.0
+2. **Warmdown** (77% of steps): 1.0 → 0.07
+
+### Whitening Bias Schedule
+
+The whitening layer bias has a separate schedule:
+
+```python
+for group in optimizer1.param_groups[:1]:
+    group["lr"] = group["initial_lr"] * (1 - step / whiten_bias_train_steps)
+```
+
+- Trained for first 3 epochs only
+- Linear decay to zero
+- Then frozen for remaining training
+
+## Bias Scaler
+
+BatchNorm biases use a boosted learning rate:
+
+```python
+bias_scaler = 64.0
+lr_biases = lr * bias_scaler
+```
+
+**Rationale:**
+- Biases have lower gradient magnitudes
+- Scaling up their learning rate compensates
+- Weight decay is scaled inversely to maintain proper regularization
+
+### Parameter Groups
+
+```python
+norm_biases = [p for k, p in model.named_parameters() if 'norm' in k and p.requires_grad]
+other_params = [p for k, p in model.named_parameters() if 'norm' not in k and p.requires_grad]
+
+param_configs = [
+    dict(params=norm_biases, lr=lr_biases, weight_decay=wd/lr_biases),
+    dict(params=other_params, lr=lr, weight_decay=wd/lr)
+]
+```
+
+Note the weight decay adjustment: `wd/lr_biases` ensures the actual decay strength remains consistent.
+
+## Label Smoothing
+
+Label smoothing prevents overconfidence:
+
+```python
+label_smoothing = 0.2
+loss_fn = nn.CrossEntropyLoss(label_smoothing=label_smoothing, reduction='none')
+```
+
+**Effect:**
+- True class target: 0.9 (instead of 1.0)
+- Other classes: 0.0111... (instead of 0.0)
+- Improves generalization and calibration
+
+## Lookahead Optimizer
+
+Airbench uses a polynomial lookahead schedule:
+
+```python
+alpha_schedule = 0.95**5 * (torch.arange(total_train_steps+1) / total_train_steps)**3
+
+if current_steps % 5 == 0:
+    lookahead_state.update(model, decay=alpha_schedule[current_steps].item())
+```
+
+**Implementation:**
+
+```python
+class LookaheadState:
+    def __init__(self, net):
+        self.net_ema = {k: v.clone() for k, v in net.state_dict().items()}
+
+    def update(self, net, decay):
+        for ema_param, net_param in zip(self.net_ema.values(), net.state_dict().values()):
+            if net_param.dtype in (torch.half, torch.float):
+                ema_param.lerp_(net_param, 1-decay)  # EMA update
+                net_param.copy_(ema_param)           # Copy back
+```
+
+**How it works:**
+1. Maintain exponential moving average (EMA) of weights
+2. Every 5 steps, update EMA and copy back to model
+3. Decay factor increases polynomially during training
+4. At end, full synchronization with `decay=1.0`
+
+**Benefits:**
+- Smoother optimization trajectory
+- Better generalization
+- Reduced oscillations near convergence
+
+## Nesterov Momentum
+
+All optimizers use Nesterov momentum:
+
+```python
+optimizer = torch.optim.SGD(param_configs, momentum=0.85, nesterov=True)
+```
+
+**Nesterov vs Standard Momentum:**
+- Standard: `update = momentum * prev_update + gradient`
+- Nesterov: `update = momentum * (momentum * prev_update + gradient) + gradient`
+
+Nesterov provides better convergence, especially with high momentum values.
+
+## Fused Optimizer
+
+For eligible parameters, PyTorch's fused optimizer is used:
+
+```python
+optimizer1 = torch.optim.SGD(param_configs, momentum=0.85, nesterov=True, fused=True)
+```
+
+Fused kernels combine multiple operations for faster execution.
+
+## Training Epochs
+
+Total training duration:
+
+```python
+train_epochs = 9.9
+total_train_steps = ceil(len(train_loader) * epochs)  # ≈ 246 steps
+```
+
+- ~10 epochs total
+- Each epoch: ~25 batches (50,000 / 2,000)
+- Total: ~246 optimization steps
+
+## Hyperparameter Values Summary
+
+### For Muon Optimizer (airbench94_muon.py)
+
+```python
+batch_size = 2000
+bias_lr = 0.053      # For whitening bias and norm biases
+head_lr = 0.67       # For classification head
+muon_lr = 0.24       # For convolutional filters
+momentum = 0.6       # For Muon
+momentum_sgd = 0.85  # For SGD parameters
+wd = 2e-6 * batch_size  # 0.004 total
+```
+
+### For Standard SGD (lib_airbench94.py)
+
+```python
+batch_size = 1024
+lr = 11.5            # Decoupled learning rate
+momentum = 0.85
+weight_decay = 0.0153
+bias_scaler = 64.0
+```
+
+## Why This Works
+
+The optimization strategy achieves fast convergence through:
+
+1. **Decoupled hyperparameters**: Easy to tune independently
+2. **Aggressive learning rates**: Enabled by whitening and normalization
+3. **Careful scheduling**: Warmup prevents instability, warmdown refines solution
+4. **Differentiated treatment**: Different parameters (biases, weights, filters) get specialized learning rates
+5. **Lookahead**: Provides stability for aggressive optimization
+6. **Label smoothing**: Prevents overconfidence, improves generalization
+
+This combination enables training to 94%+ accuracy in under 3 seconds.

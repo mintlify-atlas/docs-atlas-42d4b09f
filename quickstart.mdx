@@ -1,80 +1,256 @@
 ---
-title: "Quickstart"
-description: "Start building awesome documentation in minutes"
+title: Quickstart
+description: Get started with CIFAR-10 Airbench in under 5 minutes
 ---
 
-## Get started in three steps
+## Train Your First Model
 
-Get your documentation site running locally and make your first customization.
+Get from zero to a 94% accuracy CIFAR-10 model in just a few commands.
 
-### Step 1: Set up your local environment
+<Steps>
+  <Step title="Clone the Repository">
+    First, clone the Airbench repository:
 
-<AccordionGroup>
-  <Accordion icon="copy" title="Clone your docs locally">
-    During the onboarding process, you created a GitHub repository with your docs content if you didn't already have one. You can find a link to this repository in your [dashboard](https://dashboard.mintlify.com).
-    
-    To clone the repository locally so that you can make and preview changes to your docs, follow the [Cloning a repository](https://docs.github.com/en/repositories/creating-and-managing-repositories/cloning-a-repository) guide in the GitHub docs.
-  </Accordion>
-  <Accordion icon="rectangle-terminal" title="Start the preview server">
-    1. Install the Mintlify CLI: `npm i -g mint`
-    2. Navigate to your docs directory and run: `mint dev`
-    3. Open `http://localhost:3000` to see your docs live!
-    
-    <Tip>Your preview updates automatically as you edit files.</Tip>
-  </Accordion>
-</AccordionGroup>
+    ```bash
+    git clone https://github.com/KellerJordan/cifar10-airbench.git
+    cd cifar10-airbench
+    ```
+  </Step>
 
-### Step 2: Deploy your changes
+  <Step title="Install Dependencies">
+    Airbench requires PyTorch and torchvision. Install them if you haven't already:
 
-<AccordionGroup>
-  <Accordion icon="github" title="Install our GitHub app">
-    Install the Mintlify GitHub app from your [dashboard](https://dashboard.mintlify.com/settings/organization/github-app).
-    
-    Our GitHub app automatically deploys your changes to your docs site, so you don't need to manage deployments yourself.
-</Accordion>
-<Accordion icon="palette" title="Update your site name and colors">
-    For a first change, let's update the name and colors of your docs site.
+    ```bash
+    pip install torch torchvision
+    ```
 
-    1. Open `docs.json` in your editor.
-    2. Change the `"name"` field to your project name.
-    3. Update the `"colors"` to match your brand.
-    4. Save and see your changes instantly at `http://localhost:3000`.
+    <Note>
+    Make sure you have a CUDA-compatible GPU and the appropriate CUDA toolkit installed. See the [installation guide](/installation) for detailed requirements.
+    </Note>
+  </Step>
 
-    <Tip>Try changing the primary color to see an immediate difference!</Tip>
-  </Accordion>
-</AccordionGroup>
+  <Step title="Run the 94% Accuracy Script">
+    Run the fastest training script to achieve 94% accuracy:
 
-### Step 3: Go live
+    ```bash
+    python airbench94_muon.py
+    ```
 
-<Accordion icon="rocket" title="Publish your docs">
-  1. Commit and push your changes.
-  2. Your docs will update and be live in moments!
-</Accordion>
+    This script will:
+    - Download CIFAR-10 automatically (if needed)
+    - Initialize the model with whitening
+    - Train for approximately 8 epochs
+    - Evaluate with test-time augmentation
+  </Step>
 
-## Next steps
+  <Step title="View Results">
+    You'll see output like this:
 
-Now that you have your docs running, explore these key features:
+    ```
+    |  run     |  epoch  |  train_acc  |  val_acc  |  tta_val_acc  |  time_seconds  |
+    ------------------------------------------------------------------------------
+    |  warmup  |         |             |           |               |                |
+    ------------------------------------------------------------------------------
+    |  0       |  0      |  0.8245     |  0.8321   |               |  0.3812        |
+    |          |  1      |  0.9012     |  0.9034   |               |  0.7124        |
+    |          |  2      |  0.9234     |  0.9201   |               |  1.0456        |
+    |          |  3      |  0.9356     |  0.9298   |               |  1.3789        |
+    |          |  4      |  0.9412     |  0.9334   |               |  1.7102        |
+    |          |  5      |  0.9445     |  0.9356   |               |  2.0421        |
+    |          |  6      |  0.9467     |  0.9371   |               |  2.3745        |
+    |          |  7      |  0.9478     |  0.9378   |               |  2.5123        |
+    |          |  eval   |             |           |  0.9401       |  2.5900        |
+    ------------------------------------------------------------------------------
+    Mean: 0.9401    Std: 0.0023
+    ```
 
-<CardGroup cols={2}>
+    <Info>
+    The script runs 200 training runs by default and reports mean accuracy and standard deviation. The first run is a warmup for model compilation.
+    </Info>
+  </Step>
+</Steps>
 
-<Card title="Write Content" icon="pen-to-square" href="/essentials/markdown">
-  Learn MDX syntax and start writing your documentation.
-</Card>
+## Try the 96% Accuracy Script
 
-<Card title="Customize style" icon="palette" href="/essentials/settings">
-  Make your docs match your brand perfectly.
-</Card>
+For higher accuracy (at the cost of more training time), run:
 
-<Card title="Add code examples" icon="square-code" href="/essentials/code">
-  Include syntax-highlighted code blocks.
-</Card>
+```bash
+python airbench96_faster.py
+```
 
-<Card title="API documentation" icon="code" href="/api-reference/introduction">
-  Auto-generate API docs from OpenAPI specs.
-</Card>
+This achieves 96% accuracy in approximately 27 seconds.
 
-</CardGroup>
+## Understanding the Training Script
+
+Let's look at the key components of `airbench94_muon.py`:
+
+### Model Architecture
+
+The model uses a custom ConvNet with three convolutional groups:
+
+```python
+widths = dict(block1=64, block2=256, block3=256)
+whiten_kernel_size = 2
+whiten_width = 2 * 3 * whiten_kernel_size**2
+
+self.whiten = nn.Conv2d(3, whiten_width, whiten_kernel_size, padding=0, bias=True)
+self.layers = nn.Sequential(
+    nn.GELU(),
+    ConvGroup(whiten_width,     widths["block1"]),
+    ConvGroup(widths["block1"], widths["block2"]),
+    ConvGroup(widths["block2"], widths["block3"]),
+    nn.MaxPool2d(3),
+)
+self.head = nn.Linear(widths["block3"], 10, bias=False)
+```
+
+### GPU-Accelerated Data Loading
+
+Data is loaded directly to GPU and preprocessed there:
+
+```python
+train_loader = CifarLoader(
+    "cifar10", 
+    train=True, 
+    batch_size=2000, 
+    aug=dict(flip=True, translate=2)
+)
+```
+
+### Muon Optimizer
+
+The Muon optimizer applies orthogonalization to gradients:
+
+```python
+optimizer = Muon(filter_params, lr=0.24, momentum=0.6, nesterov=True)
+```
+
+## Using the Library API
+
+You can also use Airbench as a library in your own code:
+
+```python
+import airbench
+
+# Create data loaders
+train_loader = airbench.CifarLoader(
+    '/tmp/cifar10', 
+    train=True, 
+    aug=dict(flip=True, translate=4, cutout=16), 
+    batch_size=500
+)
+test_loader = airbench.CifarLoader(
+    '/tmp/cifar10', 
+    train=False, 
+    batch_size=1000
+)
+
+# Train a model to 94% accuracy
+net = airbench.train94()
+
+# Evaluate the model
+logits = airbench.infer(net, test_loader)
+accuracy = airbench.evaluate(net, test_loader)
+print(f"Accuracy: {accuracy:.2%}")
+```
+
+## Data Selection Example
+
+Airbench is great for rapid experimentation. Here's an example that demonstrates training on low-confidence examples:
+
+```python
+import torch
+from airbench import train94, infer, evaluate, CifarLoader
+
+# Train a model to get confidence scores
+net = train94(label_smoothing=0)
+
+# Get confidence scores for all training examples
+loader = CifarLoader('cifar10', train=True, batch_size=1000)
+logits = infer(net, loader)
+conf = logits.log_softmax(1).amax(1)
+
+# Create a loader with only low-confidence examples
+train_loader = CifarLoader(
+    'cifar10', 
+    train=True, 
+    batch_size=1024, 
+    aug=dict(flip=True, translate=2)
+)
+mask = (conf < conf.float().quantile(0.6))
+print(f'Training on {mask.sum()} low-confidence images')
+train_loader.images = train_loader.images[mask]
+train_loader.labels = train_loader.labels[mask]
+
+# Train on selected examples
+net = train94(train_loader, epochs=16)
+accuracy = evaluate(net, test_loader)
+print(f"Accuracy: {accuracy:.2%}")  # ~94% - better than random sampling!
+```
+
+<Tip>
+This example runs in under 20 seconds on an A100, making it perfect for rapid experimentation.
+</Tip>
+
+## Expected Training Times
 
 <Note>
-  **Need help?** See our [full documentation](https://mintlify.com/docs) or join our [community](https://mintlify.com/community).
+All timings are for an NVIDIA A100 (400W) with `torch==2.4.1`:
 </Note>
+
+| Model | Target Accuracy | Training Time | Total FLOPs |
+| --- | --- | --- | --- |
+| airbench94_muon.py | 94.01% | 2.59s | 0.29 PFLOPs |
+| airbench96_faster.py | 96.00% | 27.3s | 3.1 PFLOPs |
+
+## Customizing Training
+
+You can modify the dataloader to experiment with different subsets:
+
+```python
+import airbench
+
+# Create a loader
+train_loader = airbench.CifarLoader(
+    '/tmp/cifar10', 
+    train=True, 
+    aug=dict(flip=True, translate=4, cutout=16), 
+    batch_size=500
+)
+
+# Filter to only certain classes (e.g., first 6 classes)
+mask = (train_loader.labels < 6)
+train_loader.images = train_loader.images[mask]
+train_loader.labels = train_loader.labels[mask]
+
+print(len(train_loader))  # Prints 60 (30,000 images / 500 batch size)
+```
+
+## Next Steps
+
+<CardGroup cols={2}>
+  <Card title="Installation Details" icon="gear" href="/installation">
+    Learn about system requirements, GPU setup, and troubleshooting
+  </Card>
+  <Card title="API Reference" icon="book" href="/api/train94">
+    Explore the full API documentation
+  </Card>
+</CardGroup>
+
+## Common Issues
+
+<Warning>
+If you encounter CUDA out of memory errors, try reducing the batch size in the training script.
+</Warning>
+
+<Accordion title="CIFAR-10 download fails">
+  If the automatic download fails, you can manually download CIFAR-10 from [https://www.cs.toronto.edu/~kriz/cifar.html](https://www.cs.toronto.edu/~kriz/cifar.html) and place it in the `cifar10` directory.
+</Accordion>
+
+<Accordion title="Training is slower than expected">
+  Make sure:
+  - You're using an A100 GPU (other GPUs will be slower)
+  - CUDA is properly installed and configured
+  - You're using the correct PyTorch version with CUDA support
+  - No other processes are using the GPU
+</Accordion>

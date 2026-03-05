@@ -1,0 +1,306 @@
+---
+title: CifarLoader
+description: GPU-accelerated PyTorch dataloader for CIFAR-10 with built-in augmentation
+---
+
+## Overview
+
+`CifarLoader` is a high-performance, GPU-accelerated dataloader for CIFAR-10 that loads the entire dataset onto the GPU for fast iteration. It includes built-in support for common data augmentations like horizontal flipping, random translation, and cutout.
+
+The loader automatically downloads CIFAR-10 on first use and caches preprocessed data as `.pt` files for faster subsequent loading.
+
+## Constructor
+
+```python
+CifarLoader(path, train=True, batch_size=500, aug=None, drop_last=None, shuffle=None, altflip=False)
+```
+
+### Parameters
+
+<ParamField path="path" type="str" required>
+  Directory path where CIFAR-10 data will be downloaded and cached. The loader will create `train.pt` and `test.pt` files in this directory.
+  
+  **Example:** `'/tmp/cifar10'` or `'./data/cifar10'`
+</ParamField>
+
+<ParamField path="train" type="bool" default="True">
+  Whether to load the training set (`True`) or test set (`False`).
+  
+  - Training set: 50,000 images
+  - Test set: 10,000 images
+</ParamField>
+
+<ParamField path="batch_size" type="int" default="500">
+  Number of samples per batch. Since all data is stored on GPU, larger batch sizes are efficient and recommended.
+  
+  **Common values:** 500-2000 for training, 1000-2000 for testing
+</ParamField>
+
+<ParamField path="aug" type="dict | None" default="None">
+  Dictionary specifying data augmentation options. If `None`, no augmentation is applied (suitable for test set).
+  
+  **Available keys:**
+  
+  - `flip` (bool): Enable random horizontal flipping
+  - `translate` (int): Padding size for random translation (e.g., 4 for 4-pixel shifts)
+  - `cutout` (int): Size of square cutout regions (e.g., 16 for 16×16 cutout)
+  
+  **Example:** `dict(flip=True, translate=4, cutout=16)`
+</ParamField>
+
+<ParamField path="drop_last" type="bool | None" default="None">
+  Whether to drop the last incomplete batch if the dataset size is not divisible by batch size.
+  
+  - If `None`: defaults to `True` for training, `False` for testing
+  - Set explicitly to override default behavior
+</ParamField>
+
+<ParamField path="shuffle" type="bool | None" default="None">
+  Whether to shuffle data at the start of each epoch.
+  
+  - If `None`: defaults to `True` for training, `False` for testing
+  - Set explicitly to override default behavior
+</ParamField>
+
+<ParamField path="altflip" type="bool" default="False">
+  Use alternating flip augmentation strategy. When `True` and `aug['flip']` is enabled:
+  
+  - Even epochs: use pre-flipped images
+  - Odd epochs: flip all images horizontally
+  
+  This provides more data diversity compared to random per-image flipping. Recommended for advanced training.
+</ParamField>
+
+## Attributes
+
+<ResponseField name="images" type="torch.Tensor">
+  The full dataset of images stored on GPU with shape `(N, 3, 32, 32)` where N is dataset size.
+  
+  - Data type: `torch.float16` (half precision)
+  - Values: normalized to [0, 1] range
+  - Memory format: `channels_last` for optimal performance
+  - Device: CUDA (GPU)
+  
+  Can be modified to subset the data (see [Data Subsetting](#data-subsetting) example).
+</ResponseField>
+
+<ResponseField name="labels" type="torch.Tensor">
+  The corresponding labels for all images with shape `(N,)`.
+  
+  - Data type: `torch.int64`
+  - Values: integers from 0-9 representing CIFAR-10 classes
+  - Device: CUDA (GPU)
+  
+  Can be modified to subset the data.
+</ResponseField>
+
+<ResponseField name="classes" type="list">
+  List of CIFAR-10 class names:
+  ```python
+  ['airplane', 'automobile', 'bird', 'cat', 'deer', 
+   'dog', 'frog', 'horse', 'ship', 'truck']
+  ```
+</ResponseField>
+
+<ResponseField name="normalize" type="torchvision.transforms.Normalize">
+  Normalization transform using CIFAR-10 statistics:
+  - Mean: `(0.4914, 0.4822, 0.4465)`
+  - Std: `(0.2470, 0.2435, 0.2616)`
+  
+  Applied internally during iteration. Can also be used directly on images.
+</ResponseField>
+
+<ResponseField name="epoch" type="int">
+  Counter tracking the current epoch number. Starts at 0 and increments after each full iteration.
+</ResponseField>
+
+## Methods
+
+### `__len__()`
+
+Returns the number of batches per epoch.
+
+```python
+num_batches = len(loader)
+```
+
+**Returns:** Number of batches, accounting for `batch_size` and `drop_last` settings.
+
+### `__iter__()`
+
+Iterates over batches of `(images, labels)` tuples.
+
+```python
+for inputs, labels in loader:
+    # inputs: torch.Tensor of shape (batch_size, 3, 32, 32)
+    # labels: torch.Tensor of shape (batch_size,)
+    outputs = model(inputs)
+    loss = F.cross_entropy(outputs, labels)
+```
+
+**Yields:** Tuples of `(images, labels)` where:
+- `images`: normalized and augmented batch of images
+- `labels`: corresponding class labels
+
+**Behavior:**
+- On first epoch (`epoch == 0`): preprocesses and caches normalized/padded images
+- Applies augmentations according to `aug` settings
+- Increments `epoch` counter after full iteration
+- Shuffles data if `shuffle=True`
+
+## Usage Examples
+
+### Basic Training Setup
+
+```python
+import airbench
+
+# Training loader with augmentation
+train_loader = airbench.CifarLoader(
+    '/tmp/cifar10',
+    train=True,
+    batch_size=500,
+    aug=dict(flip=True, translate=4, cutout=16)
+)
+
+# Test loader without augmentation
+test_loader = airbench.CifarLoader(
+    '/tmp/cifar10',
+    train=False,
+    batch_size=1000
+)
+
+for epoch in range(200):
+    for inputs, labels in train_loader:
+        outputs = model(inputs)
+        loss = F.cross_entropy(outputs, labels)
+        # ... backward pass and optimization
+```
+
+### Data Subsetting
+
+Modify the loader's images and labels to train on a subset:
+
+```python
+import airbench
+
+train_loader = airbench.CifarLoader(
+    '/tmp/cifar10',
+    train=True,
+    batch_size=500,
+    aug=dict(flip=True, translate=4, cutout=16)
+)
+
+# Filter to only classes 0-5
+mask = (train_loader.labels < 6)
+train_loader.images = train_loader.images[mask]
+train_loader.labels = train_loader.labels[mask]
+
+print(len(train_loader))  # 60 batches (30,000 images / 500 batch_size)
+```
+
+### Confidence-Based Selection
+
+Train on low-confidence examples for active learning:
+
+```python
+import torch
+from airbench import train94, infer, CifarLoader
+
+# Train initial model to get confidence scores
+net = train94(label_smoothing=0)
+
+# Get predictions on training data
+loader = CifarLoader('cifar10', train=True, batch_size=1000)
+logits = infer(net, loader)
+conf = logits.log_softmax(1).amax(1)  # confidence per sample
+
+# Train on 60% lowest-confidence examples
+train_loader = CifarLoader(
+    'cifar10',
+    train=True,
+    batch_size=1024,
+    aug=dict(flip=True, translate=2)
+)
+mask = (conf < conf.float().quantile(0.6))
+print(f'Training on {mask.sum()} images selected by confidence')
+train_loader.images = train_loader.images[mask]
+train_loader.labels = train_loader.labels[mask]
+
+train94(train_loader, epochs=16)
+```
+
+### Advanced Augmentation
+
+Use all augmentation options with alternating flip:
+
+```python
+train_loader = airbench.CifarLoader(
+    '/tmp/cifar10',
+    train=True,
+    batch_size=1024,
+    aug=dict(
+        flip=True,      # Horizontal flipping
+        translate=4,    # ±4 pixel random translation
+        cutout=16       # 16×16 cutout augmentation
+    ),
+    altflip=True       # Alternating flip strategy
+)
+```
+
+## Augmentation Details
+
+### Horizontal Flip (`flip=True`)
+
+Random horizontal flipping with 50% probability per image.
+
+When combined with `altflip=True`, uses an alternating strategy:
+- Pre-computes flipped images on epoch 0
+- Even epochs: uses pre-flipped images
+- Odd epochs: flips all images again (returns to original orientation)
+
+This provides greater diversity than standard random flipping.
+
+### Random Translation (`translate=N`)
+
+Randomly translates images by up to N pixels in any direction with reflection padding.
+
+Implementation:
+- Pads images by N pixels on all sides using reflection padding
+- Randomly crops back to 32×32 on each iteration
+- Efficient GPU-based batched cropping
+
+### Cutout (`cutout=N`)
+
+Randomly masks out N×N square regions per image with zeros.
+
+Implementation:
+- Random position per image
+- Applied after normalization and translation
+- Implemented as efficient GPU batch operation
+
+## GPU Acceleration Benefits
+
+`CifarLoader` provides significant speedup by:
+
+1. **Loading entire dataset to GPU**: Eliminates CPU-GPU transfer bottleneck
+2. **Preprocessing on GPU**: All augmentations use fast GPU kernels
+3. **Cached preprocessing**: Normalization and padding computed once per dataset
+4. **Half precision storage**: Uses `float16` to reduce memory and increase throughput
+5. **Channels-last format**: Optimizes memory layout for modern GPUs
+
+**Performance:** Enables training a 94%-accurate CIFAR-10 model in under 3 seconds on an A100 GPU.
+
+## Notes
+
+- The loader stores the entire dataset in GPU memory (requires ~300MB for CIFAR-10)
+- First epoch has slight overhead for preprocessing; subsequent epochs are faster
+- Modifying `images` or `labels` is only supported before iteration begins (`epoch == 0`)
+- All tensors are automatically placed on CUDA device
+- Compatible with standard PyTorch training loops
+
+## See Also
+
+- [infer](/api/infer) - Run inference with optional test-time augmentation
+- [evaluate](/api/evaluate) - Compute accuracy on a dataset
+- [train94](/api/train94) - Fast training to 94% accuracy

@@ -1,0 +1,102 @@
+---
+title: 'Performance Benchmarks'
+description: 'Comprehensive performance comparison of CIFAR-10 Airbench training methods'
+---
+
+## Current Records
+
+CIFAR-10 Airbench contains the fastest known algorithms for training neural networks to 94% and 96% accuracy on CIFAR-10 using a single NVIDIA A100 GPU.
+
+| Script | Mean Accuracy | Time | PFLOPs |
+| ------ | ------------- | ---- | ------ |
+| [airbench94_muon.py](https://github.com/KellerJordan/cifar10-airbench/blob/main/airbench94_muon.py) | 94.01% | 2.59s | 0.29 |
+| [airbench96_faster.py](https://github.com/KellerJordan/cifar10-airbench/blob/main/airbench96_faster.py) | 96.00% | 27.3s | 3.1 |
+
+<Note>
+  Timings measured using `torch==2.4.1` on a 400W NVIDIA A100 GPU
+</Note>
+
+## Comparison to Standard Training
+
+For comparison, the standard training approach used in most CIFAR-10 research is significantly slower:
+
+| Baseline | Mean Accuracy | Time | PFLOPs |
+| -------- | ------------- | ---- | ------ |
+| Standard ResNet-18 training | 96.0% | 7min | 32.3 |
+
+<CardGroup cols={2}>
+  <Card title="10x Faster" icon="gauge-high">
+    Airbench96 achieves the same 96% accuracy as standard ResNet-18 training in just 27 seconds compared to 7 minutes
+  </Card>
+  <Card title="10x More Efficient" icon="bolt">
+    Uses only 3.1 PFLOPs compared to 32.3 PFLOPs for standard training
+  </Card>
+</CardGroup>
+
+## Legacy Results
+
+The original records from the research paper have been preserved in the `legacy` folder. These represent the state-of-the-art before the introduction of the Muon optimizer and advanced data filtering:
+
+| Script | Mean Accuracy | Time | PFLOPs |
+| ------ | ------------- | ---- | ------ |
+| [airbench94_compiled.py](https://github.com/KellerJordan/cifar10-airbench/blob/main/legacy/airbench94_compiled.py) | 94.01% | 3.09s | 0.36 |
+| [airbench94.py](https://github.com/KellerJordan/cifar10-airbench/blob/main/legacy/airbench94.py) | 94.01% | 3.83s | 0.36 |
+| [airbench95.py](https://github.com/KellerJordan/cifar10-airbench/blob/main/legacy/airbench95.py) | 95.01% | 10.4s | 1.4 |
+| [airbench96.py](https://github.com/KellerJordan/cifar10-airbench/blob/main/legacy/airbench96.py) | 96.03% | 34.7s | 4.9 |
+
+## Performance Improvements
+
+### From Paper to Current Records
+
+The current records represent significant improvements over the original paper results:
+
+- **94% accuracy**: Improved from 3.09s to 2.59s (16% faster) using the Muon optimizer
+- **96% accuracy**: Improved from 34.7s to 27.3s (21% faster) using data filtering techniques
+- **Computational efficiency**: Reduced PFLOPs from 0.36 to 0.29 for 94% accuracy
+
+### Key Innovations
+
+<AccordionGroup>
+  <Accordion title="Muon Optimizer">
+    The [Muon optimizer](https://kellerjordan.github.io/posts/muon/) used in `airbench94_muon.py` provides faster convergence and improved training stability, enabling the current 94% accuracy speedrun record.
+  </Accordion>
+  
+  <Accordion title="Data Filtering">
+    Advanced data filtering techniques in `airbench96_faster.py` allow the model to train more efficiently by focusing on the most informative examples, reducing training time by 21%.
+  </Accordion>
+  
+  <Accordion title="Compilation">
+    PyTorch compilation (used in legacy scripts) provides modest speedups through graph optimization, though the impact is smaller than algorithmic improvements.
+  </Accordion>
+</AccordionGroup>
+
+## Hardware and Software
+
+<Info>
+  All benchmarks are performed under controlled conditions to ensure reproducibility:
+  
+  - **GPU**: NVIDIA A100 (400W TDP)
+  - **PyTorch Version**: 2.4.1
+  - **Precision**: Mixed precision training (FP16/FP32)
+  - **Batch Size**: Optimized per script
+</Info>
+
+## Reproducing Results
+
+To reproduce these benchmarks on your own hardware:
+
+```bash
+# Clone the repository
+git clone https://github.com/KellerJordan/cifar10-airbench.git
+cd cifar10-airbench
+
+# Run the 94% accuracy record
+python airbench94_muon.py
+
+# Run the 96% accuracy record
+python airbench96_faster.py
+```
+
+<Warning>
+  Performance may vary based on GPU model, PyTorch version, and system configuration. The timings shown are specific to the hardware and software versions listed above.
+</Warning>

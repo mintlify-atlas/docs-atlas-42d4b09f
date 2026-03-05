@@ -1,0 +1,119 @@
+---
+title: Introduction
+description: Fast and stable training baselines for CIFAR-10 image classification
+---
+
+## What is CIFAR-10 Airbench?
+
+CIFAR-10 Airbench contains the fastest known algorithms for training a neural network to 94% or 96% accuracy on CIFAR-10 using a single NVIDIA A100 GPU. The project provides fast and stable training baselines to help accelerate machine learning research on one of the most widely used datasets in the field.
+
+<Info>
+CIFAR-10 is one of the most widely used datasets in machine learning, facilitating thousands of research projects per year. Airbench provides easily runnable dependency-free PyTorch scripts that can replace classic baselines like training ResNet-20 or ResNet-18.
+</Info>
+
+## Key Features
+
+<CardGroup cols={2}>
+  <Card title="Lightning Fast Training" icon="bolt">
+    Train to 94% accuracy in just 2.59 seconds on an A100 GPU
+  </Card>
+  <Card title="GPU-Accelerated DataLoader" icon="database">
+    High-performance data loading with on-GPU augmentation
+  </Card>
+  <Card title="Simple PyTorch Scripts" icon="code">
+    Dependency-free, easily runnable training scripts
+  </Card>
+  <Card title="Research-Ready" icon="flask">
+    Perfect for data selection, active learning, and other experiments
+  </Card>
+</CardGroup>
+
+## Performance Benchmarks
+
+Airbench achieves state-of-the-art training speeds on CIFAR-10:
+
+| Script | Mean Accuracy | Time | PFLOPs |
+| --- | --- | --- | --- |
+| airbench94_muon.py | 94.01% | 2.59s | 0.29 |
+| airbench96_faster.py | 96.00% | 27.3s | 3.1 |
+
+<Note>
+Timings are measured using `torch==2.4.1` on a 400W NVIDIA A100.
+</Note>
+
+For comparison, standard training used in most CIFAR-10 studies:
+
+| Baseline | Mean Accuracy | Time | PFLOPs |
+| --- | --- | --- | --- |
+| Standard ResNet-18 | 96.0% | 7 min | 32.3 |
+
+**That's over 160x faster than standard training!**
+
+## How It Works
+
+Airbench achieves these remarkable speeds through several key innovations:
+
+- **Muon Optimizer**: A specialized optimizer for ultra-fast convergence (see [Muon Optimizer](/concepts/muon-optimizer))
+- **GPU-Accelerated Data Loading**: All preprocessing happens on GPU
+- **Whitening Layer**: Improves conditioning of the optimization problem
+- **Efficient Architecture**: Carefully designed ConvNet with optimal width and depth
+- **Data Filtering**: Selective training on informative examples
+
+<Tip>
+The methods used to obtain these training speeds are described in detail in [the paper](https://arxiv.org/abs/2404.00498).
+</Tip>
+
+## Use Cases
+
+Airbench is perfect for:
+
+- **Fast Experimentation**: Iterate quickly on new ideas with 2-30 second training cycles
+- **Data Selection**: Use as a platform for active learning and data filtering experiments
+- **Baseline Comparisons**: Replace slow ResNet baselines with fast, modern alternatives
+- **Educational Projects**: Learn deep learning without waiting hours for training
+- **Research Prototyping**: Test hypotheses rapidly before scaling to larger datasets
+
+## Get Started
+
+<CardGroup cols={2}>
+  <Card title="Quickstart" icon="rocket" href="/quickstart">
+    Get up and running in under 5 minutes
+  </Card>
+  <Card title="Installation" icon="download" href="/installation">
+    Detailed installation instructions and requirements
+  </Card>
+</CardGroup>
+
+## Example Output
+
+When you run the training script, you'll see real-time progress:
+
+```
+|  run     |  epoch  |  train_acc  |  val_acc  |  tta_val_acc  |  time_seconds  |
+------------------------------------------------------------------------------
+|  0       |  0      |  0.8245     |  0.8321   |               |  0.3812        |
+|          |  1      |  0.9012     |  0.9034   |               |  0.7124        |
+|          |  eval   |             |           |  0.9401       |  2.5900        |
+------------------------------------------------------------------------------
+```
+
+## Building on Prior Work
+
+Airbench builds on excellent previous records:
+
+- [hlb-CIFAR10](https://github.com/tysam-code/hlb-CIFAR10) (6.3 A100-seconds to 94%)
+- [Myrtle.ai's How to Train Your ResNet](https://myrtle.ai/learn/how-to-train-your-resnet/) (26 V100-seconds to 94%)
+
+## Next Steps
+
+<Steps>
+  <Step title="Install Dependencies">
+    Follow the [installation guide](/installation) to set up your environment
+  </Step>
+  <Step title="Run Your First Training">
+    Use the [quickstart](/quickstart) to train your first model
+  </Step>
+  <Step title="Explore the Code">
+    Dive into the source code to understand the optimizations
+  </Step>
+</Steps>

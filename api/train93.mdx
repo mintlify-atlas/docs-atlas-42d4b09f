@@ -1,0 +1,151 @@
+---
+title: 'train93'
+description: 'Train a neural network to 93% accuracy on CIFAR-10 in ~11 epochs'
+---
+
+## Function Signature
+
+```python
+def train93(
+    train_loader=None,
+    epochs=11.0,
+    label_smoothing=0.2,
+    learning_rate=11.5,
+    bias_scaler=64.0,
+    momentum=0.85,
+    weight_decay=0.0153,
+    whiten_bias_epochs=3,
+    tta_level=2,
+    make_net=make_net93,
+    run=0,
+    verbose=True
+)
+```
+
+## Description
+
+Trains a convolutional neural network to achieve 93% accuracy on CIFAR-10. This is the fastest training configuration in the Airbench suite, achieving 93% accuracy in approximately 1/4 of the FLOPs required for 94% accuracy (but only ~40% less wallclock time on A100).
+
+The network uses a lightweight architecture with network widths of 64/128/128 for blocks 1-3, batch normalization with 0.6 momentum, and a whitening layer for efficient preprocessing.
+
+## Parameters
+
+<ParamField path="train_loader" type="CifarLoader" default="None">
+  Data loader for CIFAR-10 training data. If None, a default loader is created with batch size 1024, flip augmentation, and translate augmentation of 2 pixels.
+</ParamField>
+
+<ParamField path="epochs" type="float" default="11.0">
+  Number of training epochs. Can be fractional to train for partial epochs.
+</ParamField>
+
+<ParamField path="label_smoothing" type="float" default="0.2">
+  Label smoothing factor for cross-entropy loss. Higher values (e.g., 0.2) smooth the target distribution.
+</ParamField>
+
+<ParamField path="learning_rate" type="float" default="11.5">
+  Learning rate per 1024 examples. This is a decoupled learning rate that scales with batch size, allowing independent tuning from momentum and weight decay.
+</ParamField>
+
+<ParamField path="bias_scaler" type="float" default="64.0">
+  Multiplier for learning rate applied to BatchNorm biases (but not weight decay). Allows BatchNorm biases to adapt faster.
+</ParamField>
+
+<ParamField path="momentum" type="float" default="0.85">
+  Nesterov momentum coefficient. The decoupled parametrization ensures changing this doesn't require re-tuning the learning rate.
+</ParamField>
+
+<ParamField path="weight_decay" type="float" default="0.0153">
+  Weight decay per 1024 examples (L2 regularization). Decoupled from learning rate to allow independent tuning.
+</ParamField>
+
+<ParamField path="whiten_bias_epochs" type="int" default="3">
+  Number of epochs to train the whitening layer bias before freezing it. The whitening layer weights are always frozen.
+</ParamField>
+
+<ParamField path="tta_level" type="int" default="2">
+  Test-time augmentation level for final evaluation:
+  - 0: No augmentation
+  - 1: Mirror flip augmentation
+  - 2: Mirror + translate augmentation (most accurate)
+</ParamField>
+
+<ParamField path="make_net" type="callable" default="make_net93">
+  Function that creates and returns the neural network model. Defaults to make_net93 which creates the standard 93% architecture.
+</ParamField>
+
+<ParamField path="run" type="int" default="0">
+  Run identifier for logging purposes. Use -1 or 'warmup' for warmup runs that exit after the first batch.
+</ParamField>
+
+<ParamField path="verbose" type="bool" default="True">
+  Whether to print training progress, including per-epoch metrics and final evaluation results.
+</ParamField>
+
+## Returns
+
+<ResponseField name="model" type="torch.nn.Module">
+  The trained PyTorch model in half precision (fp16) with channels_last memory format, ready for inference or evaluation.
+</ResponseField>
+
+## Performance Metrics
+
+When run on an NVIDIA A100 GPU with the default hyperparameters:
+
+- **Mean Accuracy**: 93.00% (measured over n=50 runs)
+- **Training Time**: Not specified in legacy version (see airbench94_muon.py for faster variants)
+- **Computational Cost**: Approximately 1/4 of the FLOPs required for 94% accuracy
+
+## Usage Example
+
+```python
+import airbench
+
+# Basic usage with default hyperparameters
+model = airbench.train93()
+
+# Custom training with modified hyperparameters
+train_loader = airbench.CifarLoader(
+    'cifar10',
+    train=True,
+    batch_size=512,
+    aug={'flip': True, 'translate': 2}
+)
+model = airbench.train93(
+    train_loader=train_loader,
+    epochs=15.0,
+    learning_rate=10.0,
+    verbose=True
+)
+
+# Warmup run (exits after first batch)
+airbench.warmup93()
+```
+
+## Architecture Details
+
+The default network architecture uses:
+
+- **Whitening layer**: 2x2 kernel preprocessing layer (weights frozen after initialization)
+- **Block 1**: 64 channels
+- **Block 2**: 128 channels  
+- **Block 3**: 128 channels
+- **BatchNorm momentum**: 0.6
+- **Activation**: GELU
+- **Final scaling factor**: 1/9
+- **Precision**: Half precision (fp16) training
+
+## Data Augmentation
+
+Default augmentation pipeline includes:
+
+- **Horizontal flip**: Alternating flip scheme for increased diversity
+- **Translation**: Random crops with 2 pixels of padding
+- **No cutout**: Unlike train96, this configuration doesn't use cutout augmentation
+
+## Related Functions
+
+- [train94](/api/train94) - Train to 94% accuracy with wider network
+- [train95](/api/train95) - Train to 95% accuracy with more epochs
+- [train96](/api/train96) - Train to 96% accuracy with deepest network
+- [make_net93](/api/make-net) - Create the 93% network architecture
+- [CifarLoader](/api/cifar-loader) - GPU-accelerated CIFAR-10 data loader

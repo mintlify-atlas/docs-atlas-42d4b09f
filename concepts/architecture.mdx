@@ -1,0 +1,219 @@
+---
+title: Network Architecture
+description: Understanding the ConvNet architecture that powers CIFAR-10 Airbench
+---
+
+## Overview
+
+CIFAR-10 Airbench uses a custom convolutional neural network architecture designed for extreme efficiency and speed. The network achieves 94%+ accuracy in under 3 seconds through careful architectural choices and optimizations.
+
+## Network Structure
+
+The architecture consists of:
+
+1. **Whitening Layer**: Pre-processing convolution for input normalization
+2. **Three ConvGroup Blocks**: Hierarchical feature extraction
+3. **Global Pooling**: Spatial dimension reduction
+4. **Linear Classifier**: Final classification head
+
+### High-Level Architecture
+
+```python
+net = nn.Sequential(
+    Conv(3, whiten_width, whiten_kernel_size, padding=0, bias=True),  # Whitening
+    nn.GELU(),
+    ConvGroup(whiten_width,     widths['block1'], batchnorm_momentum), # 64 channels
+    ConvGroup(widths['block1'], widths['block2'], batchnorm_momentum), # 256 channels
+    ConvGroup(widths['block2'], widths['block3'], batchnorm_momentum), # 256 channels
+    nn.MaxPool2d(3),
+    Flatten(),
+    nn.Linear(widths['block3'], 10, bias=False),
+    Mul(scaling_factor),  # 1/9 scaling
+)
+```
+
+## Whitening Layer
+
+The whitening layer is a learned preprocessing step that normalizes input statistics:
+
+```python
+whiten_kernel_size = 2
+whiten_width = 2 * 3 * whiten_kernel_size**2  # 24 channels
+```
+
+**Key characteristics:**
+- Kernel size: 2×2
+- Output channels: 24 (doubled for positive/negative eigenvectors)
+- Initialized using PCA on training patches
+- Weights are frozen during training (not trainable)
+- Bias is trainable for the first 3 epochs only
+
+### Whitening Initialization
+
+The whitening layer is initialized using eigendecomposition of the patch covariance matrix:
+
+```python
+def init_whiten(self, train_images, eps=5e-4):
+    c, (h, w) = train_images.shape[1], self.whiten.weight.shape[2:]
+    patches = train_images.unfold(2,h,1).unfold(3,w,1).transpose(1,3).reshape(-1,c,h,w).float()
+    patches_flat = patches.view(len(patches), -1)
+    est_patch_covariance = (patches_flat.T @ patches_flat) / len(patches_flat)
+    eigenvalues, eigenvectors = torch.linalg.eigh(est_patch_covariance, UPLO="U")
+    eigenvectors_scaled = eigenvectors.T.reshape(-1,c,h,w) / torch.sqrt(eigenvalues.view(-1,1,1,1) + eps)
+    self.whiten.weight.data[:] = torch.cat((eigenvectors_scaled, -eigenvectors_scaled))
+```
+
+This preprocessing whitens input statistics, improving training stability and convergence speed.
+
+## ConvGroup Block
+
+The core building block of the network is the ConvGroup, which consists of two convolution-normalization-activation sequences:
+
+```python
+class ConvGroup(nn.Module):
+    def __init__(self, channels_in, channels_out, batchnorm_momentum):
+        super().__init__()
+        self.conv1 = Conv(channels_in,  channels_out)
+        self.pool = nn.MaxPool2d(2)
+        self.norm1 = BatchNorm(channels_out, batchnorm_momentum)
+        self.conv2 = Conv(channels_out, channels_out)
+        self.norm2 = BatchNorm(channels_out, batchnorm_momentum)
+        self.activ = nn.GELU()
+
+    def forward(self, x):
+        x = self.conv1(x)
+        x = self.pool(x)
+        x = self.norm1(x)
+        x = self.activ(x)
+        x = self.conv2(x)
+        x = self.norm2(x)
+        x = self.activ(x)
+        return x
+```
+
+**Flow:**
+1. 3×3 convolution (increases channels)
+2. 2×2 max pooling (reduces spatial dimensions by half)
+3. Batch normalization
+4. GELU activation
+5. 3×3 convolution (maintains channels)
+6. Batch normalization
+7. GELU activation
+
+## Network Widths
+
+The channel widths are carefully chosen for optimal performance:
+
+```python
+widths = {
+    'block1': 64,   # First ConvGroup output
+    'block2': 256,  # Second ConvGroup output
+    'block3': 256,  # Third ConvGroup output
+}
+```
+
+**Spatial dimension progression:**
+- Input: 32×32 → Whitening → 31×31
+- Block 1: 31×31 → 15×15 (after pooling)
+- Block 2: 15×15 → 7×7 (after pooling)
+- Block 3: 7×7 → 3×3 (after pooling)
+- Final pooling: 3×3 → 1×1
+
+## Batch Normalization
+
+Custom BatchNorm with specific design choices:
+
+```python
+class BatchNorm(nn.BatchNorm2d):
+    def __init__(self, num_features, momentum=0.6, eps=1e-12):
+        super().__init__(num_features, eps=eps, momentum=1-momentum)
+        self.weight.requires_grad = False  # Fixed to 1.0
+        # Bias is trainable
+```
+
+**Key parameters:**
+- Momentum: 0.6 (for running statistics)
+- Epsilon: 1e-12 (for numerical stability)
+- Weights fixed at 1.0 (not trainable)
+- Only biases are trainable
+
+## Convolution Layers
+
+All convolutions use Dirac initialization:
+
+```python
+class Conv(nn.Conv2d):
+    def __init__(self, in_channels, out_channels):
+        super().__init__(in_channels, out_channels, kernel_size=3, padding="same", bias=False)
+
+    def reset_parameters(self):
+        super().reset_parameters()
+        w = self.weight.data
+        torch.nn.init.dirac_(w[:w.size(1)])  # Identity-like initialization
+```
+
+**Characteristics:**
+- Kernel size: 3×3
+- Padding: "same" (maintains spatial dimensions)
+- No bias (handled by BatchNorm)
+- Dirac initialization for faster convergence
+
+## Classification Head
+
+The final classifier is simple and efficient:
+
+```python
+self.head = nn.Linear(widths['block3'], 10, bias=False)
+# ...
+return self.head(x) / x.size(-1)  # Scaled by feature dimension (256)
+```
+
+**Design choices:**
+- No bias term
+- Output scaled by 1/256 (feature dimension)
+- Additional 1/9 scaling factor in the full model
+
+## Mixed Precision
+
+The network uses mixed precision for speed:
+
+```python
+for mod in self.modules():
+    if isinstance(mod, BatchNorm):
+        mod.float()  # FP32 for stability
+    else:
+        mod.half()   # FP16 for speed
+```
+
+- Most layers: FP16 (half precision)
+- BatchNorm layers: FP32 (full precision for stability)
+- Uses channels_last memory format for faster convolutions
+
+## Memory Format Optimization
+
+```python
+net = net.to(memory_format=torch.channels_last)
+```
+
+Channels-last memory format improves performance on modern GPUs by optimizing memory access patterns for convolutions.
+
+## Compilation
+
+The model uses PyTorch 2.0+ compilation:
+
+```python
+model = CifarNet().cuda().to(memory_format=torch.channels_last)
+model.compile(mode="max-autotune")
+```
+
+Compilation provides significant speedups through kernel fusion and optimization.
+
+## Architecture Design Principles
+
+1. **Simplicity**: Straightforward sequential architecture
+2. **Efficiency**: Aggressive pooling reduces computation
+3. **Stability**: Whitening and careful normalization
+4. **Speed**: FP16, channels_last, compilation
+5. **Minimal parameters**: No residual connections, fixed BatchNorm weights
+
+This architecture achieves state-of-the-art speed-accuracy tradeoff for CIFAR-10 through careful optimization at every level.

@@ -1,0 +1,203 @@
+---
+title: 'train95'
+description: 'Train a neural network to 95% accuracy on CIFAR-10 in 15 epochs'
+---
+
+## Function Signature
+
+```python
+def train95(
+    train_loader=None,
+    epochs=15.0,
+    label_smoothing=0.2,
+    learning_rate=10.0,
+    bias_scaler=64.0,
+    momentum=0.85,
+    weight_decay=0.0153,
+    whiten_bias_epochs=3,
+    tta_level=2,
+    make_net=make_net95,
+    run=0,
+    verbose=True
+)
+```
+
+## Description
+
+Trains a convolutional neural network to achieve 95% accuracy on CIFAR-10. This configuration uses a wider network architecture and trains for more epochs compared to train94, achieving 95.01% mean accuracy.
+
+The network uses an even wider architecture with network widths of 128/384/384 for blocks 1-3, providing substantially more representational capacity for improved accuracy.
+
+## Parameters
+
+<ParamField path="train_loader" type="CifarLoader" default="None">
+  Data loader for CIFAR-10 training data. If None, a default loader is created with batch size 1024, flip augmentation, and translate augmentation of 2 pixels.
+</ParamField>
+
+<ParamField path="epochs" type="float" default="15.0">
+  Number of training epochs. Trains 50% longer than train94 to reach higher accuracy.
+</ParamField>
+
+<ParamField path="label_smoothing" type="float" default="0.2">
+  Label smoothing factor for cross-entropy loss. Higher values (e.g., 0.2) smooth the target distribution.
+</ParamField>
+
+<ParamField path="learning_rate" type="float" default="10.0">
+  Learning rate per 1024 examples. Slightly lower than train94 (10.0 vs 11.5) for more stable training with the wider network.
+</ParamField>
+
+<ParamField path="bias_scaler" type="float" default="64.0">
+  Multiplier for learning rate applied to BatchNorm biases (but not weight decay). Allows BatchNorm biases to adapt faster.
+</ParamField>
+
+<ParamField path="momentum" type="float" default="0.85">
+  Nesterov momentum coefficient. The decoupled parametrization ensures changing this doesn't require re-tuning the learning rate.
+</ParamField>
+
+<ParamField path="weight_decay" type="float" default="0.0153">
+  Weight decay per 1024 examples (L2 regularization). Decoupled from learning rate to allow independent tuning.
+</ParamField>
+
+<ParamField path="whiten_bias_epochs" type="int" default="3">
+  Number of epochs to train the whitening layer bias before freezing it. The whitening layer weights are always frozen.
+</ParamField>
+
+<ParamField path="tta_level" type="int" default="2">
+  Test-time augmentation level for final evaluation:
+  - 0: No augmentation
+  - 1: Mirror flip augmentation
+  - 2: Mirror + translate augmentation (most accurate)
+</ParamField>
+
+<ParamField path="make_net" type="callable" default="make_net95">
+  Function that creates and returns the neural network model. Defaults to make_net95 which creates the standard 95% architecture.
+</ParamField>
+
+<ParamField path="run" type="int" default="0">
+  Run identifier for logging purposes. Use -1 or 'warmup' for warmup runs that exit after the first batch.
+</ParamField>
+
+<ParamField path="verbose" type="bool" default="True">
+  Whether to print training progress, including per-epoch metrics and final evaluation results.
+</ParamField>
+
+## Returns
+
+<ResponseField name="model" type="torch.nn.Module">
+  The trained PyTorch model in half precision (fp16) with channels_last memory format, ready for inference or evaluation.
+</ResponseField>
+
+## Performance Metrics
+
+When run on an NVIDIA A100 GPU with the default hyperparameters:
+
+- **Mean Accuracy**: 95.01% (measured over n=200 runs)
+- **Training Time**: 10.4s (legacy version)
+- **Computational Cost**: 1.4 PFLOPs
+
+<Note>
+This configuration achieves 95% accuracy while still being significantly faster than standard CIFAR-10 training pipelines.
+</Note>
+
+## Usage Example
+
+```python
+import airbench
+
+# Basic usage with default hyperparameters
+model = airbench.train95()
+
+# Custom training with modified hyperparameters
+train_loader = airbench.CifarLoader(
+    'cifar10',
+    train=True,
+    batch_size=1024,
+    aug={'flip': True, 'translate': 2}
+)
+model = airbench.train95(
+    train_loader=train_loader,
+    epochs=18.0,
+    learning_rate=9.5,
+    verbose=True
+)
+
+# Evaluate on test set with TTA
+test_loader = airbench.CifarLoader('cifar10', train=False, batch_size=2000)
+accuracy = airbench.evaluate(model, test_loader, tta_level=2)
+print(f'Test accuracy with TTA: {accuracy:.2%}')
+
+# Warmup run (exits after first batch)
+airbench.warmup95()
+```
+
+## Architecture Details
+
+The default network architecture uses:
+
+- **Whitening layer**: 2x2 kernel preprocessing layer (weights frozen after initialization)
+- **Block 1**: 128 channels (2x wider than train94)
+- **Block 2**: 384 channels (1.5x wider than train94)
+- **Block 3**: 384 channels (1.5x wider than train94)
+- **BatchNorm momentum**: 0.6
+- **Activation**: GELU
+- **Final scaling factor**: 1/9
+- **Precision**: Half precision (fp16) training
+- **Total parameters**: Significantly more than train94 for improved capacity
+
+## Data Augmentation
+
+Default augmentation pipeline includes:
+
+- **Horizontal flip**: Alternating flip scheme for increased diversity
+- **Translation**: Random crops with 2 pixels of padding
+- **No cutout**: Unlike train96, this configuration doesn't use cutout augmentation
+
+## Hyperparameter Differences from train94
+
+Key changes from train94 to achieve 95% accuracy:
+
+| Parameter | train94 | train95 | Change |
+|-----------|---------|---------|--------|
+| **epochs** | 9.9 | 15.0 | +52% more training |
+| **learning_rate** | 11.5 | 10.0 | -13% for stability |
+| **block1 width** | 64 | 128 | 2x wider |
+| **block2 width** | 256 | 384 | 1.5x wider |
+| **block3 width** | 256 | 384 | 1.5x wider |
+
+## Use Cases
+
+train95 is ideal for:
+
+- Research requiring higher accuracy than 94% but faster than 96%
+- Benchmarking new techniques with a good accuracy/speed tradeoff
+- Experiments where 95% accuracy is sufficient
+- Ablation studies on data selection or augmentation
+
+## Comparison with Other Targets
+
+```python
+import airbench
+import time
+
+# Compare different accuracy targets
+for train_fn, target in [(airbench.train93, '93%'),
+                          (airbench.train94, '94%'),
+                          (airbench.train95, '95%')]:
+    start = time.time()
+    model = train_fn(verbose=False)
+    elapsed = time.time() - start
+    
+    test_loader = airbench.CifarLoader('cifar10', train=False, batch_size=2000)
+    acc = airbench.evaluate(model, test_loader, tta_level=2)
+    print(f'{target} target: {acc:.2%} accuracy in {elapsed:.1f}s')
+```
+
+## Related Functions
+
+- [train93](/api/train93) - Train to 93% accuracy with narrower network
+- [train94](/api/train94) - Train to 94% accuracy in fewer epochs
+- [train96](/api/train96) - Train to 96% accuracy with deepest network
+- [make_net95](/api/make-net) - Create the 95% network architecture
+- [CifarLoader](/api/cifar-loader) - GPU-accelerated CIFAR-10 data loader
+- [infer](/api/infer) - Run inference with test-time augmentation
+- [evaluate](/api/evaluate) - Evaluate model accuracy

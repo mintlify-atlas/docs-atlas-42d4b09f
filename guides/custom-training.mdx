@@ -1,0 +1,411 @@
+---
+title: 'Custom Training Loops'
+description: 'Build custom CIFAR-10 experiments using the airbench module'
+icon: 'code'
+---
+
+## Overview
+
+The airbench module can be used independently to build custom training experiments. It provides a fast GPU-accelerated dataloader and pre-configured training functions that you can extend or modify.
+
+## Using the GPU-Accelerated Dataloader
+
+The `CifarLoader` is the core component for fast data loading:
+
+### Basic Usage
+
+```python
+import airbench
+
+train_loader = airbench.CifarLoader('/tmp/cifar10', train=True, 
+                                    aug=dict(flip=True, translate=4, cutout=16), 
+                                    batch_size=500)
+test_loader = airbench.CifarLoader('/tmp/cifar10', train=False, batch_size=1000)
+
+for epoch in range(200):
+    for inputs, labels in train_loader:
+        # outputs = model(inputs)
+        # loss = F.cross_entropy(outputs, labels)
+        ...
+```
+
+<Note>
+The dataloader automatically downloads CIFAR-10 on first use and caches it as `.pt` files for fast loading.
+</Note>
+
+### Augmentation Options
+
+<ParamField path="flip" type="bool" default="False">
+  Random horizontal flips. Uses alternating flip scheme by default (all images flip together every other epoch).
+</ParamField>
+
+<ParamField path="translate" type="int" default="0">
+  Random translation in pixels. Common values: 2 (fast), 4 (standard)
+</ParamField>
+
+<ParamField path="cutout" type="int" default="0">
+  Size of random square cutout. Common values: 12, 16. Set to 0 to disable.
+</ParamField>
+
+### Example: Custom Augmentation
+
+```python
+# Light augmentation for fast training
+light_aug = dict(flip=True, translate=2)
+train_loader = airbench.CifarLoader('cifar10', train=True, batch_size=1024, aug=light_aug)
+
+# Heavy augmentation for better accuracy
+heavy_aug = dict(flip=True, translate=4, cutout=16)
+train_loader = airbench.CifarLoader('cifar10', train=True, batch_size=512, aug=heavy_aug)
+
+# No augmentation for testing
+test_loader = airbench.CifarLoader('cifar10', train=False, batch_size=2000)
+```
+
+## Modifying Data in the Loader
+
+You can directly modify the images and labels in the loader for custom experiments:
+
+```python
+import airbench
+
+train_loader = airbench.CifarLoader('/tmp/cifar10', train=True, 
+                                    aug=dict(flip=True, translate=4, cutout=16), 
+                                    batch_size=500)
+
+# Example: Filter to only cats and dogs (classes 3 and 5)
+mask = (train_loader.labels == 3) | (train_loader.labels == 5)
+train_loader.images = train_loader.images[mask]
+train_loader.labels = train_loader.labels[mask]
+
+# Example: Use only first 6 classes
+mask = (train_loader.labels < 6)
+train_loader.images = train_loader.images[mask]
+train_loader.labels = train_loader.labels[mask]
+
+print(len(train_loader))  # Number of batches with the filtered data
+```
+
+<Warning>
+Modify `images` and `labels` before iterating over the loader. Once iteration starts (epoch > 0), modifications are not supported.
+</Warning>
+
+### Understanding the Loader
+
+```python
+train_loader = airbench.CifarLoader('cifar10', train=True, batch_size=500)
+
+# Access the raw data
+print(train_loader.images.shape)  # torch.Size([50000, 3, 32, 32])
+print(train_loader.labels.shape)  # torch.Size([50000])
+print(train_loader.classes)       # List of class names
+
+# The loader computes batch count
+print(len(train_loader))          # 100 (50000 / 500)
+```
+
+## Pre-Configured Training Functions
+
+The airbench module provides pre-configured training functions for different accuracy targets:
+
+```python
+import airbench
+
+# Train to 94% accuracy (fastest)
+model = airbench.train94()
+
+# Train to 95% accuracy
+model = airbench.train95()
+
+# Train to 96% accuracy (slowest but most accurate)
+model = airbench.train96()
+```
+
+### Customizing Training Parameters
+
+```python
+import airbench
+
+# Create custom data loader
+train_loader = airbench.CifarLoader('cifar10', train=True, batch_size=512, 
+                                    aug=dict(flip=True, translate=2))
+
+# Train with custom parameters
+model = airbench.train94(
+    train_loader=train_loader,
+    epochs=12,                # More epochs
+    learning_rate=10.0,       # Higher learning rate
+    weight_decay=0.02,        # Stronger regularization
+    label_smoothing=0.1,      # Less smoothing
+    verbose=True              # Print training progress
+)
+```
+
+<Tip>
+All training functions accept a custom `train_loader` as the first argument. This lets you use filtered or modified data.
+</Tip>
+
+## Building a Complete Training Loop
+
+Here's a complete example from the README:
+
+```python
+import torch
+import torch.nn.functional as F
+import airbench
+
+# Create data loaders
+train_loader = airbench.CifarLoader('cifar10', train=True, batch_size=512,
+                                    aug=dict(flip=True, translate=2))
+test_loader = airbench.CifarLoader('cifar10', train=False, batch_size=1000)
+
+# Create model
+model = airbench.make_net94()
+optimizer = torch.optim.SGD(model.parameters(), lr=0.01, momentum=0.9)
+
+# Training loop
+for epoch in range(10):
+    model.train()
+    for inputs, labels in train_loader:
+        outputs = model(inputs)
+        loss = F.cross_entropy(outputs, labels)
+        
+        optimizer.zero_grad()
+        loss.backward()
+        optimizer.step()
+    
+    # Evaluate
+    accuracy = airbench.evaluate(model, test_loader)
+    print(f'Epoch {epoch}: {accuracy:.4f}')
+```
+
+## Using Inference and Evaluation Utilities
+
+The module provides utilities for model evaluation:
+
+### Basic Evaluation
+
+```python
+import airbench
+
+test_loader = airbench.CifarLoader('cifar10', train=False, batch_size=1000)
+
+# Simple evaluation
+accuracy = airbench.evaluate(model, test_loader, tta_level=0)
+print(f'Test accuracy: {accuracy:.4f}')
+```
+
+### Test-Time Augmentation
+
+```python
+# TTA level 0: No augmentation (fastest)
+accuracy = airbench.evaluate(model, test_loader, tta_level=0)
+
+# TTA level 1: Mirror augmentation
+accuracy = airbench.evaluate(model, test_loader, tta_level=1)
+
+# TTA level 2: Mirror + translate (most accurate, slowest)
+accuracy = airbench.evaluate(model, test_loader, tta_level=2)
+```
+
+### Getting Raw Predictions
+
+```python
+import airbench
+
+test_loader = airbench.CifarLoader('cifar10', train=False, batch_size=1000)
+
+# Get logits for all test images
+logits = airbench.infer(model, test_loader, tta_level=2)
+print(logits.shape)  # torch.Size([10000, 10])
+
+# Get predictions
+predictions = logits.argmax(1)
+print(predictions.shape)  # torch.Size([10000])
+
+# Get confidence scores
+confidences = logits.softmax(1).max(1).values
+print(confidences.shape)  # torch.Size([10000])
+```
+
+## Advanced: Creating Custom Networks
+
+You can create custom networks using the pre-configured architectures:
+
+```python
+import airbench
+import torch.nn as nn
+
+# Use the default 94% architecture
+model = airbench.make_net94()
+
+# Customize the architecture
+custom_widths = {'block1': 128, 'block2': 512, 'block3': 512}
+model = airbench.make_net94(widths=custom_widths, batchnorm_momentum=0.8)
+
+# Add custom layers on top
+class CustomModel(nn.Module):
+    def __init__(self):
+        super().__init__()
+        self.base = airbench.make_net94()
+        # Remove the final classification layer
+        self.base = nn.Sequential(*list(self.base.children())[:-2])
+        # Add custom head
+        self.head = nn.Linear(256, 100)  # For CIFAR-100
+    
+    def forward(self, x):
+        features = self.base(x)
+        return self.head(features)
+```
+
+## Complete Example: Custom Training Script
+
+Here's a complete custom training script:
+
+```python
+import torch
+import torch.nn as nn
+import torch.nn.functional as F
+import airbench
+
+def train_custom(epochs=20, batch_size=1024, lr=0.1):
+    # Setup
+    train_loader = airbench.CifarLoader('cifar10', train=True, 
+                                        batch_size=batch_size,
+                                        aug=dict(flip=True, translate=4))
+    test_loader = airbench.CifarLoader('cifar10', train=False, batch_size=1000)
+    
+    # Model and optimizer
+    model = airbench.make_net94()
+    optimizer = torch.optim.SGD(model.parameters(), lr=lr, 
+                               momentum=0.9, weight_decay=5e-4)
+    scheduler = torch.optim.lr_scheduler.CosineAnnealingLR(optimizer, epochs)
+    
+    # Training loop
+    for epoch in range(epochs):
+        model.train()
+        train_loss = 0
+        correct = 0
+        total = 0
+        
+        for inputs, labels in train_loader:
+            outputs = model(inputs)
+            loss = F.cross_entropy(outputs, labels)
+            
+            optimizer.zero_grad()
+            loss.backward()
+            optimizer.step()
+            
+            train_loss += loss.item()
+            correct += (outputs.argmax(1) == labels).sum().item()
+            total += labels.size(0)
+        
+        scheduler.step()
+        
+        # Evaluation
+        test_acc = airbench.evaluate(model, test_loader, tta_level=0)
+        train_acc = 100. * correct / total
+        
+        print(f'Epoch {epoch+1}/{epochs}: '
+              f'Train Acc: {train_acc:.2f}%, '
+              f'Test Acc: {test_acc*100:.2f}%, '
+              f'Loss: {train_loss/len(train_loader):.4f}')
+    
+    # Final evaluation with TTA
+    final_acc = airbench.evaluate(model, test_loader, tta_level=2)
+    print(f'\nFinal accuracy (TTA): {final_acc*100:.2f}%')
+    
+    return model
+
+if __name__ == '__main__':
+    model = train_custom(epochs=30, batch_size=512, lr=0.05)
+```
+
+## Performance Tips
+
+<CardGroup cols={2}>
+  <Card title="Use Large Batches" icon="layer-group">
+    Batch sizes of 512-2048 work well on modern GPUs
+  </Card>
+  <Card title="Enable cudnn.benchmark" icon="bolt">
+    `torch.backends.cudnn.benchmark = True`
+  </Card>
+  <Card title="Use torch.compile" icon="rocket">
+    Compile your model for 20-30% speedup
+  </Card>
+  <Card title="Use channels_last" icon="memory">
+    `.to(memory_format=torch.channels_last)`
+  </Card>
+</CardGroup>
+
+## Common Patterns
+
+### Pattern 1: Train with Subset of Data
+
+```python
+train_loader = airbench.CifarLoader('cifar10', train=True, batch_size=512, 
+                                    aug=dict(flip=True, translate=2))
+
+# Use only 50% of training data
+import torch
+mask = torch.rand(len(train_loader.labels)) < 0.5
+train_loader.images = train_loader.images[mask]
+train_loader.labels = train_loader.labels[mask]
+
+model = airbench.train94(train_loader, epochs=15)
+```
+
+### Pattern 2: Transfer Learning Setup
+
+```python
+# Load pretrained model
+model = airbench.train94()  # Train on CIFAR-10
+
+# Freeze all layers except the head
+for param in model.parameters():
+    param.requires_grad = False
+model[-2].weight.requires_grad = True  # Unfreeze final linear layer
+
+# Fine-tune on new data
+optimizer = torch.optim.Adam(model.parameters(), lr=0.001)
+for epoch in range(10):
+    for inputs, labels in custom_loader:
+        loss = F.cross_entropy(model(inputs), labels)
+        optimizer.zero_grad()
+        loss.backward()
+        optimizer.step()
+```
+
+### Pattern 3: Confidence-Based Filtering
+
+```python
+import airbench
+
+# Get model predictions
+test_loader = airbench.CifarLoader('cifar10', train=False, batch_size=1000)
+logits = airbench.infer(model, test_loader)
+confidences = logits.softmax(1).max(1).values
+
+# Filter low-confidence examples
+low_conf_mask = confidences < 0.8
+low_conf_indices = low_conf_mask.nonzero(as_tuple=True)[0]
+print(f'Found {len(low_conf_indices)} low-confidence examples')
+
+# Visualize or retrain on these examples
+for idx in low_conf_indices[:10]:
+    image = test_loader.images[idx]
+    true_label = test_loader.labels[idx]
+    pred_label = logits[idx].argmax()
+    print(f'True: {true_label}, Pred: {pred_label}, Conf: {confidences[idx]:.3f}')
+```
+
+## Next Steps
+
+<CardGroup cols={2}>
+  <Card title="Data Selection" href="/guides/data-selection" icon="filter">
+    Learn advanced data selection techniques
+  </Card>
+  <Card title="API Reference" href="/api/train94" icon="book">
+    Detailed API documentation
+  </Card>
+</CardGroup>

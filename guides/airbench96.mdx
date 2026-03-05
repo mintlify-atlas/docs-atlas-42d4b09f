@@ -1,0 +1,326 @@
+---
+title: 'Airbench96: 96% Accuracy in 27.3 Seconds'
+description: 'Achieve 96% accuracy on CIFAR-10 using data filtering and proxy networks'
+icon: 'trophy'
+---
+
+## Overview
+
+The **airbench96_faster.py** script achieves 96.00% mean accuracy on CIFAR-10 in 27.3 seconds on a 400W NVIDIA A100 GPU, using advanced techniques like data filtering and proxy network training.
+
+<Info>
+**Performance**: 96.00% mean accuracy (n=200 trials) in 27.3 seconds using 3.1 PFLOPs
+</Info>
+
+## Key Features
+
+- **Data Filtering**: Trains a small proxy network to identify high-loss examples
+- **Dual Model Training**: Separate models for bias training and frozen bias
+- **Lookahead Optimization**: Exponential moving average for weight stability
+- **Deeper Architecture**: 3-layer ConvGroups with residual connections
+- **Cutout Augmentation**: 12-pixel cutout for stronger regularization
+
+## Quick Start
+
+```bash
+python airbench96_faster.py
+```
+
+This script takes approximately 27 seconds compared to the standard 7 minutes for ResNet-18.
+
+## Architecture Differences from Airbench94
+
+### Network Configuration
+
+```python
+hyp = {
+    'net': {
+        'widths': {
+            'block1': 128,  # vs 64 in airbench94
+            'block2': 384,  # vs 256 in airbench94
+            'block3': 512,  # vs 256 in airbench94
+        },
+        'depth': 3,  # vs 2 in airbench94 (adds residual connection)
+        'scaling_factor': 1/9,
+        'tta_level': 2,
+    },
+}
+```
+
+### Deeper ConvGroup
+
+The 96% variant uses 3-layer ConvGroups with residual connections:
+
+```python
+class ConvGroup(nn.Module):
+    def __init__(self, channels_in, channels_out, depth):
+        super().__init__()
+        assert depth in (2, 3)
+        self.depth = depth
+        self.conv1 = Conv(channels_in,  channels_out)
+        self.pool = nn.MaxPool2d(2)
+        self.norm1 = BatchNorm(channels_out)
+        self.conv2 = Conv(channels_out, channels_out)
+        self.norm2 = BatchNorm(channels_out)
+        if depth == 3:
+            self.conv3 = Conv(channels_out, channels_out)
+            self.norm3 = BatchNorm(channels_out)
+        self.activ = nn.GELU()
+
+    def forward(self, x):
+        x = self.conv1(x)
+        x = self.pool(x)
+        x = self.norm1(x)
+        x = self.activ(x)
+        if self.depth == 3:
+            x0 = x
+        x = self.conv2(x)
+        x = self.norm2(x)
+        x = self.activ(x)
+        if self.depth == 3:
+            x = self.conv3(x)
+            x = self.norm3(x)
+            x = x + x0  # Residual connection
+            x = self.activ(x)
+        return x
+```
+
+## Data Filtering Strategy
+
+The key innovation is training a small proxy network to identify which examples to train on:
+
+### Proxy Network Training
+
+```python
+def train_proxy(hyp, model, data_seed):
+    # Train small proxy network
+    for indices, inputs, labels in train_loader:
+        if current_steps % 4 == 0:
+            outputs = model(inputs)
+            loss1 = loss_fn(outputs, labels)
+            mask = torch.zeros(len(inputs)).cuda().bool()
+            mask[loss1.argsort()[-hyp['opt']['batch_size_masked']:]] = True
+            masks.append(mask)
+            loss = (loss1 * mask.float()).sum()
+            optimizer.zero_grad(set_to_none=True)
+            loss.backward()
+            optimizer.step()
+        else:
+            # Skip every other backward pass for speed
+            with torch.no_grad():
+                outputs = model(inputs)
+                loss1 = loss_fn(outputs, labels)
+                mask = torch.zeros(len(inputs)).cuda().bool()
+                mask[loss1.argsort()[-hyp['opt']['batch_size_masked']:]] = True
+                masks.append(mask)
+    return masks
+```
+
+<Note>
+The proxy network runs with batch_size=1024 but only trains on the top 512 highest-loss examples (batch_size_masked=512), focusing on the hardest examples.
+</Note>
+
+### Applying Masks to Main Training
+
+```python
+masks = iter(train_proxy(hyp, model_proxy, data_seed))
+
+for indices, inputs, labels in train_loader:
+    mask = next(masks)
+    inputs = inputs[mask]  # Filter to hard examples
+    labels = labels[mask]
+    outputs = model(inputs)
+    loss = loss_fn(outputs, labels).sum()
+```
+
+## Training Hyperparameters
+
+<ParamField path="train_epochs" type="float" default="45.0">
+  Much longer training than airbench94's 8 epochs
+</ParamField>
+
+<ParamField path="batch_size" type="int" default="1024">
+  Smaller than airbench94's 2000 for better gradient estimates
+</ParamField>
+
+<ParamField path="batch_size_masked" type="int" default="512">
+  Only train on the 512 hardest examples per batch
+</ParamField>
+
+<ParamField path="lr" type="float" default="9.0">
+  Learning rate per 1024 examples
+</ParamField>
+
+<ParamField path="weight_decay" type="float" default="0.012">
+  Stronger regularization than airbench94
+</ParamField>
+
+<ParamField path="label_smoothing" type="float" default="0.2">
+  Same as airbench94
+</ParamField>
+
+## Lookahead Optimization
+
+The script uses lookahead/EMA for weight stability:
+
+```python
+class LookaheadState:
+    def __init__(self, net):
+        self.net_ema = {k: v.clone() for k, v in net.state_dict().items()}
+
+    def update(self, net, decay):
+        for ema_param, net_param in zip(self.net_ema.values(), net.state_dict().values()):
+            if net_param.dtype in (torch.half, torch.float):
+                ema_param.lerp_(net_param, 1-decay)
+                net_param.copy_(ema_param)
+
+# Update every 5 steps
+alpha_schedule = 0.95**5 * (torch.arange(total_train_steps+1) / total_train_steps)**3
+if current_steps % 5 == 0:
+    lookahead_state.update(model, decay=alpha_schedule[current_steps].item())
+```
+
+## Enhanced Data Augmentation
+
+```python
+'aug': {
+    'flip': True,
+    'translate': 4,  # vs 2 in airbench94
+    'cutout': 12,    # added for airbench96
+}
+```
+
+### Cutout Implementation
+
+```python
+def batch_cutout(inputs, size):
+    cutout_masks = make_random_square_masks(inputs, size)
+    return inputs.masked_fill(cutout_masks, 0)
+
+def make_random_square_masks(inputs, size):
+    n,c,h,w = inputs.shape
+    corner_y = torch.randint(0, h-size+1, size=(n,), device=inputs.device)
+    corner_x = torch.randint(0, w-size+1, size=(n,), device=inputs.device)
+    
+    corner_y_dists = torch.arange(h, device=inputs.device).view(1, 1, h, 1) - corner_y.view(-1, 1, 1, 1)
+    corner_x_dists = torch.arange(w, device=inputs.device).view(1, 1, 1, w) - corner_x.view(-1, 1, 1, 1)
+    
+    mask_y = (corner_y_dists >= 0) * (corner_y_dists < size)
+    mask_x = (corner_x_dists >= 0) * (corner_x_dists < size)
+    
+    return mask_y * mask_x
+```
+
+## InfiniteCifarLoader
+
+A specialized loader that supports cross-epoch batches:
+
+```python
+class InfiniteCifarLoader:
+    """
+    CIFAR-10 loader which constructs every input to be used during training during the call to __iter__.
+    The purpose is to support cross-epoch batches (in case the batch size does not divide the number 
+    of train examples), and support stochastic iteration counts in order to preserve perfect 
+    linearity/independence.
+    """
+    def __init__(self, path, train=True, batch_size=500, aug=None, altflip=True, 
+                 subset_mask=None, aug_seed=None, order_seed=None):
+        # ... initialization code ...
+        self.aug_seed = aug_seed
+        self.order_seed = order_seed
+```
+
+This loader ensures reproducibility with data seeds and supports subsetting via masks.
+
+## Dual Model Strategy
+
+The script uses three compiled models:
+
+```python
+model_proxy = make_net(hyp['proxy'])  # Small proxy for mask generation
+model_trainbias = make_net(hyp['net'])  # Main model with trainable bias
+model_freezebias = make_net(hyp['net'])  # Main model with frozen bias
+
+model_proxy[0].bias.requires_grad = False
+model_trainbias = torch.compile(model_trainbias, mode='max-autotune')
+model_freezebias[0].bias.requires_grad = False
+model_freezebias = torch.compile(model_freezebias, mode='max-autotune')
+
+# Switch models after bias training epochs
+if epoch == hyp['opt']['whiten_bias_epochs'] * steps_per_epoch:
+    model = model_freezebias
+    model.load_state_dict(model_trainbias.state_dict())
+```
+
+<Warning>
+Switching between models requires careful state transfer. The frozen-bias model is pre-compiled to avoid recompilation delays.
+</Warning>
+
+## Performance Breakdown
+
+<Steps>
+  <Step title="Proxy Training">
+    Train small proxy network (~3-5 seconds)
+    
+    Generates masks for hard example selection
+  </Step>
+  <Step title="Main Training">
+    Train full network with filtered data (~20 seconds)
+    
+    45 epochs with batch_size_masked=512
+  </Step>
+  <Step title="TTA Evaluation">
+    Test-time augmentation (~2 seconds)
+    
+    6 views per image for final predictions
+  </Step>
+</Steps>
+
+## Comparison with Airbench94
+
+| Feature | Airbench94 | Airbench96 |
+|---------|------------|------------|
+| **Runtime** | 2.59s | 27.3s |
+| **Accuracy** | 94.01% | 96.00% |
+| **PFLOPs** | 0.29 | 3.1 |
+| **Epochs** | ~8 | 45 |
+| **Batch Size** | 2000 | 1024 (512 masked) |
+| **Architecture** | 3 × 2-layer blocks | 3 × 3-layer blocks |
+| **Widths** | 64-256-256 | 128-384-512 |
+| **Optimizer** | Muon | SGD with Lookahead |
+| **Data Filtering** | No | Yes (proxy network) |
+| **Cutout** | No | 12 pixels |
+
+## Tips for Customization
+
+<Tip>
+1. **Adjust batch_size_masked**: Lower values focus on harder examples but may hurt accuracy
+2. **Tune proxy network size**: Smaller proxy is faster but may generate noisier masks
+3. **Modify cutout size**: Larger cutout (16) increases regularization
+4. **Change depth**: Set depth=2 in ConvGroup for faster training (slight accuracy drop)
+</Tip>
+
+## Common Issues
+
+<AccordionGroup>
+  <Accordion title="Out of memory errors">
+    Reduce `batch_size` from 1024 to 512 or 768. The script uses two models simultaneously.
+  </Accordion>
+  <Accordion title="Lower than expected accuracy">
+    Ensure you're using the full 200 runs for mean accuracy. Single runs can vary ±0.5%.
+  </Accordion>
+  <Accordion title="Slower than expected runtime">
+    Check that `torch.backends.cudnn.benchmark = True` and models are compiled with `mode='max-autotune'`.
+  </Accordion>
+</AccordionGroup>
+
+## Next Steps
+
+<CardGroup cols={2}>
+  <Card title="Airbench94" href="/guides/airbench94" icon="bolt">
+    Faster training for 94% accuracy
+  </Card>
+  <Card title="Data Selection" href="/guides/data-selection" icon="filter">
+    Advanced data selection techniques
+  </Card>
+</CardGroup>
