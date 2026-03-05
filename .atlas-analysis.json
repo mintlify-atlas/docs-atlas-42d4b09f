@@ -1,0 +1,113 @@
+{
+  "projectType": "ai-ml",
+  "projectName": "CIFAR-10 Airbench",
+  "projectDescription": "Ultra-fast CIFAR-10 training achieving 94% accuracy in 2.6 seconds and 96% in 27 seconds on a single NVIDIA A100 GPU",
+  "theme": "aspen",
+  "primaryColor": "#b21e1e",
+  "lightColor": "#e59f82",
+  "darkColor": "#e0dbd9",
+  "navigation": {
+    "tabs": [
+      {
+        "tab": "Documentation",
+        "groups": [
+          {
+            "group": "Get Started",
+            "pages": [
+              "introduction",
+              "quickstart",
+              "installation"
+            ]
+          },
+          {
+            "group": "Training Guides",
+            "pages": [
+              "guides/airbench94",
+              "guides/airbench96",
+              "guides/custom-training",
+              "guides/data-selection"
+            ]
+          },
+          {
+            "group": "Core Concepts",
+            "pages": [
+              "concepts/architecture",
+              "concepts/optimization-techniques",
+              "concepts/muon-optimizer",
+              "concepts/data-augmentation"
+            ]
+          }
+        ]
+      },
+      {
+        "tab": "API Reference",
+        "groups": [
+          {
+            "group": "Training Functions",
+            "pages": [
+              "api/train93",
+              "api/train94",
+              "api/train95",
+              "api/train96"
+            ]
+          },
+          {
+            "group": "Network Functions",
+            "pages": [
+              "api/make-net",
+              "api/infer",
+              "api/evaluate"
+            ]
+          },
+          {
+            "group": "Data Loading",
+            "pages": [
+              "api/cifar-loader"
+            ]
+          }
+        ]
+      },
+      {
+        "tab": "Resources",
+        "groups": [
+          {
+            "group": "Additional Resources",
+            "pages": [
+              "resources/benchmarks",
+              "resources/research-paper",
+              "resources/faq"
+            ]
+          }
+        ]
+      }
+    ]
+  },
+  "keyFeatures": [
+    "94% CIFAR-10 accuracy in 2.59 seconds on A100",
+    "96% CIFAR-10 accuracy in 27.3 seconds on A100",
+    "GPU-accelerated data loading with on-the-fly augmentation",
+    "Muon optimizer for efficient training",
+    "Modular training functions (train93, train94, train95, train96)",
+    "Custom network architecture with efficient ConvNet design",
+    "Test-time augmentation support",
+    "Data selection and active learning utilities",
+    "Minimal dependencies (PyTorch and torchvision only)"
+  ],
+  "publicApiSurface": [
+    "train93()",
+    "train94()",
+    "train95()",
+    "train96()",
+    "make_net93()",
+    "make_net94()",
+    "make_net95()",
+    "make_net96()",
+    "warmup93()",
+    "warmup94()",
+    "warmup95()",
+    "warmup96()",
+    "infer(model, loader, tta_level)",
+    "evaluate(model, loader, tta_level)",
+    "CifarLoader(path, train, batch_size, aug, drop_last, shuffle, altflip)"
+  ]
+}
